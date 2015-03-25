@@ -40,7 +40,7 @@ Amp::Amp (Session& s)
 	: Processor(s, "Amp")
 	, _apply_gain(true)
 	, _apply_gain_automation(false)
-	, _current_gain(1.0)
+	, _current_gain(GAIN_COEFF_UNITY)
 	, _gain_automation_buffer(0)
 {
 	Evoral::Parameter p (GainAutomation);
@@ -106,7 +106,7 @@ Amp::run (BufferSet& bufs, framepos_t /*start_frame*/, framepos_t /*end_frame*/,
 				Amp::apply_gain (bufs, nframes, _current_gain, dg);
 				_current_gain = dg;
 
-			} else if (_current_gain != 1.0f) {
+			} else if (_current_gain != GAIN_COEFF_UNITY) {
 
 				/* gain has not changed, but its non-unity
 				*/
@@ -194,9 +194,9 @@ Amp::apply_gain (BufferSet& bufs, framecnt_t nframes, gain_t initial, gain_t tar
 
 		if (declick != nframes) {
 
-			if (target == 0.0) {
+			if (target < GAIN_COEFF_SMALL) {
 				memset (&buffer[declick], 0, sizeof (Sample) * (nframes - declick));
-			} else if (target != 1.0) {
+			} else if (target != GAIN_COEFF_UNITY) {
 				apply_gain_to_buffer (&buffer[declick], nframes - declick, target);
 			}
 		}
@@ -222,13 +222,13 @@ Amp::declick (BufferSet& bufs, framecnt_t nframes, int dir)
 	if (dir < 0) {
 		/* fade out: remove more and more of delta from initial */
 		delta = -1.0;
-                initial = 1.0;
-                target = 0.0;
+                initial = GAIN_COEFF_UNITY;
+                target = GAIN_COEFF_ZERO;
 	} else {
 		/* fade in: add more and more of delta from initial */
 		delta = 1.0;
-                initial = 0.0;
-                target = 1.0;
+                initial = GAIN_COEFF_ZERO;
+                target = GAIN_COEFF_UNITY;
 	}
 
 	/* Audio Gain */
@@ -247,9 +247,9 @@ Amp::declick (BufferSet& bufs, framecnt_t nframes, int dir)
 
 		if (declick != nframes) {
 
-			if (target == 0.0) {
+			if (target < GAIN_COEFF_SMALL) {
                                 memset (&buffer[declick], 0, sizeof (Sample) * (nframes - declick));
-			} else if (target != 1.0) {
+			} else if (target != GAIN_COEFF_UNITY) {
 				apply_gain_to_buffer (&buffer[declick], nframes - declick, target);
 			}
 		}
@@ -299,9 +299,9 @@ Amp::apply_gain (AudioBuffer& buf, framecnt_t nframes, gain_t initial, gain_t ta
 
         if (declick != nframes) {
 
-                if (target == 0.0) {
+                if (target < GAIN_COEFF_SMALL) {
                         memset (&buffer[declick], 0, sizeof (Sample) * (nframes - declick));
-                } else if (target != 1.0) {
+                } else if (target != GAIN_COEFF_UNITY) {
                         apply_gain_to_buffer (&buffer[declick], nframes - declick, target);
                 }
         }
@@ -310,7 +310,7 @@ Amp::apply_gain (AudioBuffer& buf, framecnt_t nframes, gain_t initial, gain_t ta
 void
 Amp::apply_simple_gain (BufferSet& bufs, framecnt_t nframes, gain_t target)
 {
-	if (target == 0.0) {
+	if (target < GAIN_COEFF_SMALL) {
 
 		for (BufferSet::midi_iterator i = bufs.midi_begin(); i != bufs.midi_end(); ++i) {
 			MidiBuffer& mb (*i);
@@ -327,7 +327,7 @@ Amp::apply_simple_gain (BufferSet& bufs, framecnt_t nframes, gain_t target)
 			memset (i->data(), 0, sizeof (Sample) * nframes);
 		}
 
-	} else if (target != 1.0) {
+	} else if (target != GAIN_COEFF_UNITY) {
 
 		for (BufferSet::midi_iterator i = bufs.midi_begin(); i != bufs.midi_end(); ++i) {
 			MidiBuffer& mb (*i);
@@ -349,9 +349,9 @@ Amp::apply_simple_gain (BufferSet& bufs, framecnt_t nframes, gain_t target)
 void
 Amp::apply_simple_gain (AudioBuffer& buf, framecnt_t nframes, gain_t target)
 {
-	if (target == 0.0) {
+	if (target < GAIN_COEFF_SMALL) {
                 memset (buf.data(), 0, sizeof (Sample) * nframes);
-	} else if (target != 1.0) {
+	} else if (target != GAIN_COEFF_UNITY) {
                 apply_gain_to_buffer (buf.data(), nframes, target);
 	}
 }
@@ -361,7 +361,7 @@ Amp::inc_gain (gain_t factor, void *src)
 {
 	float desired_gain = _gain_control->user_double();
 
-	if (desired_gain == 0.0f) {
+	if (desired_gain < GAIN_COEFF_SMALL) {
 		set_gain (0.000001f + (0.000001f * factor), src);
 	} else {
 		set_gain (desired_gain + (desired_gain * factor), src);
