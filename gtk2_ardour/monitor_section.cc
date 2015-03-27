@@ -458,11 +458,15 @@ MonitorSection::set_session (Session* s)
 			/* session with monitor section */
 			_monitor = _route->monitor_control ();
 			assign_controllables ();
-			_route->output()->changed.connect (*this, invalidator (*this), boost::bind (&MonitorSection::update_output_display, this), gui_context());
+			_route->output()->changed.connect (_output_changed_connection, invalidator (*this),
+											boost::bind (&MonitorSection::update_output_display, this),
+											gui_context());
 		} else {
 			/* session with no monitor section */
+			_output_changed_connection.disconnect();
 			_monitor.reset ();
 			_route.reset ();
+			delete _output_selector;
 		}
 
 		if (channel_table_scroller.get_parent()) {
@@ -503,6 +507,7 @@ MonitorSection::set_session (Session* s)
 	} else {
 		/* no session */
 
+		_output_changed_connection.disconnect();
 		_monitor.reset ();
 		_route.reset ();
 		control_connections.drop_connections ();
