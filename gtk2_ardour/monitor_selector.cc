@@ -199,7 +199,7 @@ MonitorSelectorWindow::MonitorSelectorWindow (ARDOUR::Session* session, boost::s
 	: ArdourWindow (_("Monitor output selector"))
 	, _selector (this, session, io)
 {
-	set_name ("MonitorSelectorWindow2");
+	set_name ("IOSelectorWindow2");
 
 	add (_selector);
 
