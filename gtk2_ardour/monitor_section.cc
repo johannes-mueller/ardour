@@ -420,8 +420,12 @@ MonitorSection::MonitorSection (Session* s)
 	_tearoff->tearoff_window().set_title (X_("Monitor"));
 	_tearoff->tearoff_window().signal_key_press_event().connect (sigc::ptr_fun (forward_key_press), false);
 
-	/* catch changes that affect us */
+	update_output_display();
 
+	/* catch changes that affect us */
+	AudioEngine::instance()->PortConnectedOrDisconnected.connect (
+		*this, invalidator (*this), boost::bind (&MonitorSection::port_connected_or_disconnected, this, _1, _3), gui_context ()
+		);
 	Config->ParameterChanged.connect (config_connection, invalidator (*this), boost::bind (&MonitorSection::parameter_changed, this, _1), gui_context());
 }
 
@@ -432,6 +436,7 @@ MonitorSection::~MonitorSection ()
 	}
 
 	_channel_buttons.clear ();
+	_output_changed_connection.disconnect ();
 
 	delete output_button;
 	delete gain_control;
@@ -443,6 +448,8 @@ MonitorSection::~MonitorSection ()
 	delete solo_cut_control;
 	delete solo_cut_display;
 	delete _tearoff;
+	delete _output_selector;
+	_output_selector = 0;
 }
 
 void
@@ -467,6 +474,7 @@ MonitorSection::set_session (Session* s)
 			_monitor.reset ();
 			_route.reset ();
 			delete _output_selector;
+			_output_selector = 0;
 		}
 
 		if (channel_table_scroller.get_parent()) {
@@ -514,6 +522,7 @@ MonitorSection::set_session (Session* s)
 		rude_iso_button.unset_active_state ();
 		rude_solo_button.unset_active_state ();
 		delete _output_selector;
+		_output_selector = 0;
 
 		assign_controllables ();
 	}
@@ -1015,7 +1024,6 @@ MonitorSection::map_state ()
 			}
 		}
 	}
-	update_output_display();
 }
 
 void
@@ -1210,9 +1218,6 @@ MonitorSection::maybe_add_bundle_to_output_menu (boost::shared_ptr<Bundle> b, AR
 void
 MonitorSection::bundle_output_chosen (boost::shared_ptr<ARDOUR::Bundle> c)
 {
-	if (ignore_toggle) {
-		return;
-	}
 
 	ARDOUR::BundleList current = _route->output()->bundles_connected ();
 
@@ -1320,6 +1325,10 @@ MonitorSection::output_button_resized (Gtk::Allocation& alloc)
 void
 MonitorSection::update_output_display ()
 {
+	if (!_route || !_monitor) {
+		return;
+	}
+
 	uint32_t io_count;
 	uint32_t io_index;
 	boost::shared_ptr<Port> port;
@@ -1488,12 +1497,19 @@ MonitorSection::edit_output_configuration ()
 {
 	if (_output_selector == 0) {
 		_output_selector = new MonitorSelectorWindow (_session, _route->output());
-		_output_selector->present ();
 	}
+	_output_selector->present ();
+}
 
-	if (_output_selector->is_visible()) {
-		_output_selector->get_toplevel()->get_window()->raise();
-	} else {
-		_output_selector->present ();
+void
+MonitorSection::port_connected_or_disconnected (boost::weak_ptr<Port> wa, boost::weak_ptr<Port> wb)
+{
+	if (!_route) {
+		return;
+	}
+	boost::shared_ptr<Port> a = wa.lock ();
+	boost::shared_ptr<Port> b = wb.lock ();
+	if ((a && _route->output()->has_port (a)) || (b && _route->output()->has_port (b))) {
+		update_output_display ();
 	}
 }

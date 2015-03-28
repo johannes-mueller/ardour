@@ -158,4 +158,5 @@ class MonitorSection : public RouteUI
 	bool _inhibit_solo_model_update;
 
 	void assign_controllables ();
+	void port_connected_or_disconnected (boost::weak_ptr<ARDOUR::Port>, boost::weak_ptr<ARDOUR::Port>);
 };
