@@ -330,6 +330,10 @@ MonitorSection::MonitorSection (Session* s)
 	output_button->set_text (_("Output"));
 	output_button->set_name (X_("monitor section cut"));
 	output_button->set_text_ellipsize (Pango::ELLIPSIZE_MIDDLE);
+	VBox* v_packer = manage (new VBox);
+	v_packer->set_spacing (6);
+	v_packer->pack_start (*output_label, false, false);
+	v_packer->pack_start (*output_button, false, false);
 
 	spin_label = manage (new Label (_("Monitor")));
 	spin_packer = manage (new VBox);
@@ -338,8 +342,7 @@ MonitorSection::MonitorSection (Session* s)
 	spin_packer->pack_start (*spin_label, false, false);
 	spin_packer->pack_start (*gain_control, false, false);
 	spin_packer->pack_start (*gain_display, false, false);
-	spin_packer->pack_start (*output_label, false, false);
-	spin_packer->pack_start (*output_button, false, false);
+	spin_packer->pack_start (*v_packer, false, false, 24);
 
 	lower_packer.pack_start (*spin_packer, true, true);
 
