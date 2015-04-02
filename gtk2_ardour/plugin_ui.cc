@@ -357,7 +357,7 @@ PluginUIWindow::on_key_press_event (GdkEventKey* event)
 			if (_pluginui->non_gtk_gui()) {
 				_pluginui->forward_key_event (event);
 			} else {
-				return relay_key_press (event, this);
+					return relay_key_press (event, this);
 			}
 		}
 		return true;

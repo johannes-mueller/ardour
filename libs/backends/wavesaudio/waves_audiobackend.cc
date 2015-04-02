@@ -793,11 +793,10 @@ WavesAudioBackend::stop ()
 		}
 	}
 
-    _midi_device_manager.stop ();
-
+	_midi_device_manager.stop ();
     _unregister_system_audio_ports ();
     _unregister_system_midi_ports ();
-
+	
     return retVal;
 }
 

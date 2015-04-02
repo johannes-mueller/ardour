@@ -372,7 +372,7 @@ MixerStrip::init ()
 	_visibility.add (&_comment_button, X_("Comments"), _("Comments"), false);
 
 	parameter_changed (X_("mixer-element-visibility"));
-
+	ARDOUR_UI::config()->ParameterChanged.connect (sigc::mem_fun (*this, &MixerStrip::parameter_changed));
 	Config->ParameterChanged.connect (_config_connection, MISSING_INVALIDATOR, boost::bind (&MixerStrip::parameter_changed, this, _1), gui_context());
 	_session->config.ParameterChanged.connect (_config_connection, MISSING_INVALIDATOR, boost::bind (&MixerStrip::parameter_changed, this, _1), gui_context());
 
@@ -450,11 +450,6 @@ MixerStrip::set_route (boost::shared_ptr<Route> rt)
 	   GUI object state.
 	*/
 	processor_box.set_route (rt);
-
-	/* map the current state */
-
-	mute_changed (0);
-	update_solo_display ();
 
 	revert_to_default_display ();
 
@@ -602,7 +597,7 @@ MixerStrip::set_route (boost::shared_ptr<Route> rt)
 
 	/* now force an update of all the various elements */
 
-	mute_changed (0);
+	update_mute_display ();
 	update_solo_display ();
 	name_changed ();
 	comment_changed (0);

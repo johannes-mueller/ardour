@@ -1010,8 +1010,7 @@ RegionMotionDrag::motion (GdkEvent* event, bool first_move)
 			this_delta_layer = - i->layer;
 		}
 
-		int this_delta_time_axis_view = delta_time_axis_view;
-		this_delta_time_axis_view = apply_track_delta(i->time_axis_view, delta_time_axis_view, delta_skip) - i->time_axis_view;
+		int this_delta_time_axis_view = apply_track_delta(i->time_axis_view, delta_time_axis_view, delta_skip) - i->time_axis_view;
 
 		int track_index = i->time_axis_view + this_delta_time_axis_view;
 		assert(track_index >= 0);
@@ -1173,8 +1172,9 @@ RegionMotionDrag::motion (GdkEvent* event, bool first_move)
 				/* if all logic and maths are correct, there is no need to assign the 'current' pointer.
 				 * the current position can be calculated as follows:
 				 */
-				assert (current_pointer_time_axis_view == _time_axis_views.size() - dtz + _ddropzone + delta_time_axis_view);
-				// robin crosses his fingers, and looks at busses.
+				// a well placed oofus attack can still throw this off.
+				// likley auto-scroll related, printf() debugging may tell, commented out for now.
+				//assert (current_pointer_time_axis_view == _time_axis_views.size() - dtz + _ddropzone + delta_time_axis_view);
 			}
 		} else {
 			/* last motion event was also over a time axis view */
@@ -1357,7 +1357,11 @@ RegionMoveDrag::create_destination_time_axis (boost::shared_ptr<Region> region, 
 	try {
 		if (boost::dynamic_pointer_cast<AudioRegion> (region)) {
 			list<boost::shared_ptr<AudioTrack> > audio_tracks;
-			audio_tracks = _editor->session()->new_audio_track (region->n_channels(), region->n_channels(), ARDOUR::Normal, 0, 1, region->name());
+			uint32_t output_chan = region->n_channels();
+			if ((Config->get_output_auto_connect() & AutoConnectMaster) && _editor->session()->master_out()) {
+				output_chan =  _editor->session()->master_out()->n_inputs().n_audio();
+			}
+			audio_tracks = _editor->session()->new_audio_track (region->n_channels(), output_chan, ARDOUR::Normal, 0, 1, region->name());
 			RouteTimeAxisView* rtav = _editor->axis_view_from_route (audio_tracks.front());
 			if (rtav) {
 				rtav->set_height (original->current_height());

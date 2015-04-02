@@ -2623,10 +2623,8 @@ ARDOUR_UI::edit_metadata ()
 {
 	SessionMetadataEditor dialog;
 	dialog.set_session (_session);
-	Keyboard::magic_widget_grab_focus ();
 	dialog.grab_focus ();
 	dialog.run ();
-	Keyboard::magic_widget_drop_focus ();
 }
 
 void
@@ -3147,6 +3145,7 @@ ARDOUR_UI::build_session (const std::string& path, const std::string& snap_name,
 	XMLNode* n;
 	n = Config->instant_xml (X_("Editor"));
 	if (n) {
+		n->remove_nodes_and_delete ("Selection"); // no not apply selection to new sessions.
 		new_session->add_instant_xml (*n, false);
 	}
 	n = Config->instant_xml (X_("Mixer"));
@@ -3677,7 +3676,7 @@ ARDOUR_UI::start_video_server (Gtk::Window* float_window, bool popup_msg)
 	int firsttime = 0;
 	while (!ARDOUR_UI::instance()->video_timeline->check_server()) {
 		if (firsttime++) {
-			warning << _("Could not connect to the Video Server. Start it or configure its access URL in Edit -> Preferences.") << endmsg;
+			warning << _("Could not connect to the Video Server. Start it or configure its access URL in Preferences.") << endmsg;
 		}
 		VideoServerDialog *video_server_dialog = new VideoServerDialog (_session);
 		if (float_window) {
@@ -3782,7 +3781,7 @@ ARDOUR_UI::add_video (Gtk::Window* float_window)
 	}
 
 	if (!start_video_server(float_window, false)) {
-		warning << _("Could not connect to the Video Server. Start it or configure its access URL in Edit -> Preferences.") << endmsg;
+		warning << _("Could not connect to the Video Server. Start it or configure its access URL in Preferences.") << endmsg;
 		return;
 	}
 

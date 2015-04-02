@@ -91,6 +91,7 @@
 #include "ardour/smf_source.h"
 #include "ardour/source_factory.h"
 #include "ardour/speakers.h"
+#include "ardour/tempo.h"
 #include "ardour/track.h"
 #include "ardour/user_bundle.h"
 #include "ardour/utils.h"
@@ -576,6 +577,8 @@ Session::destroy ()
 	delete _midi_ports; _midi_ports = 0;
 	delete _locations; _locations = 0;
 
+	delete _tempo_map;
+	
 	DEBUG_TRACE (DEBUG::Destruction, "Session::destroy() done\n");
 
 #ifdef BOOST_SP_ENABLE_DEBUG_HOOKS

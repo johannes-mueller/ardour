@@ -87,9 +87,13 @@ RouteUI::RouteUI (ARDOUR::Session* sess)
 
 RouteUI::~RouteUI()
 {
+	if (_route) {
+		gui_object_state().remove_node (route_state_id());
+	}
+
 	_route.reset (); /* drop reference to route, so that it can be cleaned up */
 	route_connections.drop_connections ();
-
+    
 	delete solo_menu;
 	delete mute_menu;
 	delete sends_menu;
@@ -242,7 +246,7 @@ RouteUI::set_route (boost::shared_ptr<Route> rp)
 	solo_button->set_controllable (_route->solo_control());
 
 	_route->active_changed.connect (route_connections, invalidator (*this), boost::bind (&RouteUI::route_active_changed, this), gui_context());
-	_route->mute_changed.connect (route_connections, invalidator (*this), boost::bind (&RouteUI::mute_changed, this, _1), gui_context());
+	_route->mute_changed.connect (route_connections, invalidator (*this), boost::bind (&RouteUI::update_mute_display, this), gui_context());
 
 	_route->comment_changed.connect (route_connections, invalidator (*this), boost::bind (&RouteUI::comment_changed, this, _1), gui_context());
 
@@ -1180,12 +1184,6 @@ RouteUI::update_solo_display ()
 
 void
 RouteUI::solo_changed_so_update_mute ()
-{
-	update_mute_display ();
-}
-
-void
-RouteUI::mute_changed(void* /*src*/)
 {
 	update_mute_display ();
 }

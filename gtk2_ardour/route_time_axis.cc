@@ -156,9 +156,6 @@ RouteTimeAxisView::set_route (boost::shared_ptr<Route> rt)
 		set_gui_property ("visible", false);
 	}
 
-	mute_changed (0);
-	update_solo_display ();
-
 	timestretch_rect = 0;
 	no_redraw = false;
 
@@ -323,6 +320,8 @@ RouteTimeAxisView::set_route (boost::shared_ptr<Route> rt)
 
 RouteTimeAxisView::~RouteTimeAxisView ()
 {
+	cleanup_gui_properties ();
+	
 	for (list<ProcessorAutomationInfo*>::iterator i = processor_automation.begin(); i != processor_automation.end(); ++i) {
 		delete *i;
 	}
