@@ -187,7 +187,10 @@ class LocationUI : public Gtk::HBox, public ARDOUR::SessionHandlePtr
 	Gtk::VBox            range_rows;
 
 	Gtk::CheckButton cd_all_locations_checkbutton;
-
+	Gtk::CheckButton hide_all_locations_checkbutton;
+	Gtk::CheckButton hide_xrun_locations_checkbutton;
+	Gtk::CheckButton lock_all_locations_checkbutton;
+	Gtk::CheckButton glue_all_locations_checkbutton;
 
 	/* When any location changes it start
 	   or end points, it sends a signal that is caught
@@ -207,6 +210,10 @@ class LocationUI : public Gtk::HBox, public ARDOUR::SessionHandlePtr
 	void map_locations (const ARDOUR::Locations::LocationList&);
 
 	void cd_all_locations_toggled();
+	void hide_all_locations_toggled();
+	void hide_xrun_locations_toggled();
+	void lock_all_locations_toggled();
+	void glue_all_locations_toggled();
 
 	std::list<ARDOUR::Location*> marker_locations;
 

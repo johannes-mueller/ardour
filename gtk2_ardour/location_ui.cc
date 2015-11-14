@@ -727,6 +727,10 @@ LocationUI::LocationUI ()
 	: add_location_button (_("New Marker"))
 	, add_range_button (_("New Range"))
 	, cd_all_locations_checkbutton (_("All CD except xruns"))
+	, hide_all_locations_checkbutton (_("Hide all"))
+	, hide_xrun_locations_checkbutton (_("Hide xruns"))
+	, lock_all_locations_checkbutton (_("Lock all"))
+	, glue_all_locations_checkbutton (_("Glue all"))
 {
 	i_am_the_modifier = 0;
 
@@ -774,8 +778,25 @@ LocationUI::LocationUI ()
 	all_loc_table->set_spacings (2);
 	all_loc_table->set_col_spacing (0, 32);
 
-	all_loc_table->attach (cd_all_locations_checkbutton, 0, 1, 0, 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+	int col = 0;
+	all_loc_table->attach (cd_all_locations_checkbutton, col, col+1, 0, 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
 	cd_all_locations_checkbutton.signal_toggled().connect(sigc::mem_fun(*this, &LocationUI::cd_all_locations_toggled));
+	++col;
+
+	all_loc_table->attach (hide_all_locations_checkbutton, col, col+1, 0, 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+	hide_all_locations_checkbutton.signal_toggled().connect(sigc::mem_fun(*this, &LocationUI::hide_all_locations_toggled));
+	++col;
+
+	all_loc_table->attach (hide_xrun_locations_checkbutton, col, col+1, 0, 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+	hide_xrun_locations_checkbutton.signal_toggled().connect(sigc::mem_fun(*this, &LocationUI::hide_xrun_locations_toggled));
+	++col;
+
+	all_loc_table->attach (lock_all_locations_checkbutton, col, col+1, 0, 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+	lock_all_locations_checkbutton.signal_toggled().connect(sigc::mem_fun(*this, &LocationUI::lock_all_locations_toggled));
+	++col;
+
+	all_loc_table->attach (glue_all_locations_checkbutton, col, col+1, 0, 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+	glue_all_locations_checkbutton.signal_toggled().connect(sigc::mem_fun(*this, &LocationUI::glue_all_locations_toggled));
 
 	table->attach (*all_loc_table, 0, 2, table_row, table_row + 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
 	table_row++;
@@ -1144,6 +1165,47 @@ LocationUI::cd_all_locations_toggled()
 	}
 }
 
+void
+LocationUI::hide_all_locations_toggled()
+{
+	for (list<Location*>::iterator it = marker_locations.begin(); it != marker_locations.end(); it++) {
+		(*it)->set_hidden(hide_all_locations_checkbutton.get_active(), this);
+	}
+}
+
+void
+LocationUI::hide_xrun_locations_toggled()
+{
+	for (list<Location*>::iterator it = marker_locations.begin(); it != marker_locations.end(); it++) {
+		if ((*it)->name().find("xrun") == 0) {
+			(*it)->set_hidden(hide_xrun_locations_checkbutton.get_active(), this);
+		}
+	}
+}
+
+void
+LocationUI::lock_all_locations_toggled()
+{
+	for (list<Location*>::iterator it = marker_locations.begin(); it != marker_locations.end(); it++) {
+		if ((*it)->locked ()) {
+			(*it)->unlock ();
+		} else {
+			(*it)->lock ();
+		}
+	}
+}
+
+void
+LocationUI::glue_all_locations_toggled()
+{
+	for (list<Location*>::iterator it = marker_locations.begin(); it != marker_locations.end(); it++) {
+		if ((*it)->position_lock_style() == AudioTime) {
+			(*it)->set_position_lock_style (MusicTime);
+		} else {
+			(*it)->set_position_lock_style (AudioTime);
+		}
+	}
+}
 
 AudioClock::Mode
 LocationUI::clock_mode_from_session_instant_xml () const
