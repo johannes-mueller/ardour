@@ -972,6 +972,10 @@ LocationUI::location_added (Location* location)
 			erow->focus_name();
 		}
 	}
+
+	if (location->is_mark()) {
+		marker_locations.push_back(location);
+	}
 }
 
 void
@@ -992,6 +996,10 @@ LocationUI::location_removed (Location* location)
 				break;
 			}
 		}
+	}
+
+	if (location->is_mark()) {
+		marker_locations.remove(location);
 	}
 }
 
