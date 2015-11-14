@@ -186,6 +186,9 @@ class LocationUI : public Gtk::HBox, public ARDOUR::SessionHandlePtr
 	Gtk::ScrolledWindow  range_rows_scroller;
 	Gtk::VBox            range_rows;
 
+	Gtk::CheckButton cd_all_locations_checkbutton;
+
+
 	/* When any location changes it start
 	   or end points, it sends a signal that is caught
 	   by one of these functions
@@ -202,6 +205,10 @@ class LocationUI : public Gtk::HBox, public ARDOUR::SessionHandlePtr
 	void location_removed (ARDOUR::Location *);
 	void location_added (ARDOUR::Location *);
 	void map_locations (const ARDOUR::Locations::LocationList&);
+
+	void cd_all_locations_toggled();
+
+	std::list<ARDOUR::Location*> marker_locations;
 
         ClockGroup* _clock_group;
 	AudioClock::Mode clock_mode_from_session_instant_xml () const;

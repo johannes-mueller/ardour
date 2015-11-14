@@ -726,6 +726,7 @@ LocationEditRow::set_clock_editable_status ()
 LocationUI::LocationUI ()
 	: add_location_button (_("New Marker"))
 	, add_range_button (_("New Range"))
+	, cd_all_locations_checkbutton (_("All CD"))
 {
 	i_am_the_modifier = 0;
 
@@ -768,6 +769,16 @@ LocationUI::LocationUI ()
 	l->set_use_markup (true);
 	table->attach (*l, 0, 2, table_row, table_row + 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
 	++table_row;
+
+	Table* all_loc_table = manage(new Table (1,4));
+	all_loc_table->set_spacings (2);
+	all_loc_table->set_col_spacing (0, 32);
+
+	all_loc_table->attach (cd_all_locations_checkbutton, 0, 1, 0, 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+	cd_all_locations_checkbutton.signal_toggled().connect(sigc::mem_fun(*this, &LocationUI::cd_all_locations_toggled));
+
+	table->attach (*all_loc_table, 0, 2, table_row, table_row + 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+	table_row++;
 
 	location_rows.set_name("LocationLocRows");
 	location_rows_scroller.add (location_rows);
@@ -974,6 +985,8 @@ LocationUI::map_locations (const Locations::LocationList& locations)
 
 	temp.sort (cmp);
 
+	marker_locations.clear();
+
 	for (n = 0, i = temp.begin(); i != temp.end(); ++n, ++i) {
 
 		Location* location = *i;
@@ -987,6 +1000,7 @@ LocationUI::map_locations (const Locations::LocationList& locations)
 
                         Box_Helpers::BoxList & loc_children = location_rows.children();
 			loc_children.push_back(Box_Helpers::Element(*erow, PACK_SHRINK, 1, PACK_START));
+			marker_locations.push_back(location);
 		} else if (location->is_auto_punch()) {
 			punch_edit_row.set_session (_session);
 			punch_edit_row.set_location (location);
@@ -1119,6 +1133,15 @@ LocationUI::get_state () const
 	node->add_property (X_("clock-mode"), enum_2_string (_clock_group->clock_mode ()));
 	return *node;
 }
+
+void
+LocationUI::cd_all_locations_toggled()
+{
+	for (list<Location*>::iterator it = marker_locations.begin(); it != marker_locations.end(); it++) {
+		(*it)->set_cd(cd_all_locations_checkbutton.get_active(), this);
+	}
+}
+
 
 AudioClock::Mode
 LocationUI::clock_mode_from_session_instant_xml () const
