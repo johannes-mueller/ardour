@@ -726,7 +726,7 @@ LocationEditRow::set_clock_editable_status ()
 LocationUI::LocationUI ()
 	: add_location_button (_("New Marker"))
 	, add_range_button (_("New Range"))
-	, cd_all_locations_checkbutton (_("All CD"))
+	, cd_all_locations_checkbutton (_("All CD except xruns"))
 {
 	i_am_the_modifier = 0;
 
@@ -1138,7 +1138,9 @@ void
 LocationUI::cd_all_locations_toggled()
 {
 	for (list<Location*>::iterator it = marker_locations.begin(); it != marker_locations.end(); it++) {
-		(*it)->set_cd(cd_all_locations_checkbutton.get_active(), this);
+		if ((*it)->name().find("xrun") != 0) {
+			(*it)->set_cd(cd_all_locations_checkbutton.get_active(), this);
+		}
 	}
 }
 
