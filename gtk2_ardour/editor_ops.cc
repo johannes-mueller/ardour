@@ -2211,6 +2211,33 @@ Editor::remove_location_at_playhead_cursor ()
 	}
 }
 
+void
+Editor::remove_all_location_markers ()
+{
+	if (!_session)
+		return;
+
+	bool removed = false;
+	Locations* locs = _session->locations();
+	XMLNode &before = locs->get_state();
+	const Locations::LocationList &loc_list = locs->list();
+	for (Locations::LocationList::const_iterator it = loc_list.begin(); it != loc_list.end(); ) {
+		if ((*it)->is_mark()) {
+			locs->remove(*it++);
+			removed = true;
+		} else {
+			++it;
+		}
+	}
+
+	if (removed) {
+		begin_reversible_command (_("remove all markers"));
+		XMLNode &after = locs->get_state();
+		_session->add_command(new MementoCommand<Locations>(*locs, &before, &after));
+		commit_reversible_command ();
+	}
+}
+
 /** Add a range marker around each selected region */
 void
 Editor::add_locations_from_region ()

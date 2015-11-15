@@ -1468,6 +1468,7 @@ class Editor : public PublicEditor, public PBD::ScopedConnectionList, public ARD
 
 	void add_location_from_playhead_cursor ();
 	void remove_location_at_playhead_cursor ();
+	void remove_all_location_markers ();
 	bool select_new_marker;
 
 	void reverse_selection ();
