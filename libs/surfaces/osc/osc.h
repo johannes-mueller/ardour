@@ -298,6 +298,7 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
         PATH_CALLBACK3(route_set_send_gain_dB,i,i,f);
         PATH_CALLBACK4(route_plugin_parameter,i,i,i,f);
         PATH_CALLBACK3(route_plugin_parameter_print,i,i,i);
+        PATH_CALLBACK3(route_set_automation_state, i, s, s);
 
 	int route_mute (int rid, int yn);
 	int route_solo (int rid, int yn);
@@ -312,6 +313,7 @@ class OSC : public ARDOUR::ControlProtocol, public AbstractUI<OSCUIRequest>
 	int route_set_send_gain_dB (int rid, int sid, float val);
 	int route_plugin_parameter (int rid, int piid,int par, float val);
 	int route_plugin_parameter_print (int rid, int piid,int par);
+        int route_set_automation_state (int rid, char& control_name, char state);
 
 	void listen_to_route (boost::shared_ptr<ARDOUR::Route>, lo_address);
 	void end_listen (boost::shared_ptr<ARDOUR::Route>, lo_address);

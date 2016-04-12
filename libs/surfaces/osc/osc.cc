@@ -466,7 +466,7 @@ OSC::register_callbacks()
 		REGISTER_CALLBACK (serv, "/ardour/pushbutton/scroll_up_1_page", "f", scroll_up_1_page);
 		REGISTER_CALLBACK (serv, "/ardour/pushbutton/scroll_dn_1_page", "f", scroll_dn_1_page);
 
-		/* These commands require the route index in addition to the arg; TouchOSC (et al) can't use these  */ 
+		/* These commands require the route index in addition to the arg; TouchOSC (et al) can't use these  */
 		REGISTER_CALLBACK (serv, "/ardour/routes/mute", "ii", route_mute);
 		REGISTER_CALLBACK (serv, "/ardour/routes/solo", "ii", route_solo);
 		REGISTER_CALLBACK (serv, "/ardour/routes/recenable", "ii", route_recenable);
@@ -480,6 +480,7 @@ OSC::register_callbacks()
 		REGISTER_CALLBACK (serv, "/ardour/routes/plugin/parameter/print", "iii", route_plugin_parameter_print);
 		REGISTER_CALLBACK (serv, "/ardour/routes/send/gainabs", "iif", route_set_send_gain_abs);
 		REGISTER_CALLBACK (serv, "/ardour/routes/send/gaindB", "iif", route_set_send_gain_dB);
+		REGISTER_CALLBACK (serv, "/ardour/routes/automation_state", "iss", route_set_automation_state);
 
 		/* still not-really-standardized query interface */
 		//REGISTER_CALLBACK (serv, "/ardour/*/#current_value", "", current_value);
@@ -1330,6 +1331,64 @@ OSC::route_plugin_parameter_print (int rid, int piid, int par)
 	}
 
 	return 0;
+}
+
+static int
+set_automation_state (boost::shared_ptr<AutomationControl> c, char state)
+{
+        switch (state) {
+		case 'p':
+			c->set_automation_state (Play);
+			break;
+		case 'm':
+			c->set_automation_state (Off);
+			break;
+		case 'w':
+			c->set_automation_state (Write);
+			break;
+		case 't':
+			c->set_automation_state (Touch);
+			break;
+		default:
+			return -1;
+        }
+
+        return 0;
+}
+
+int
+OSC::route_set_automation_state(int rid, char& control_name, char state)
+{
+        if (!session) {
+                return -1;
+        }
+
+	cerr << "route_set_automation_state " << rid << " " << &control_name << " " << state << endl;
+        boost::shared_ptr<Route> r = session->route_by_remote_id (rid);
+
+        if (!r) {
+                cerr << "No such route " << endl;
+                return -1;
+        }
+
+        map<string, uint32_t> cmap;
+        cmap["gain"] = GainAutomation;
+        cmap["mute"] = MuteAutomation;
+        cmap["trim"] = TrimAutomation;
+
+        if (!cmap.count (&control_name)) {
+                cerr << "No such control in map" << endl;
+                return -1;
+        }
+
+        boost::shared_ptr<AutomationControl> control = r->get_control (Evoral::Parameter(cmap.at (&control_name)));
+
+        if (!control) {
+                cerr << "No such control in route" << endl;
+                return -1;
+        }
+
+        return set_automation_state(control, state);
 }
 
 XMLNode&
