@@ -25,6 +25,8 @@
 #include <cerrno>
 #include <unistd.h>
 
+#include <glibmm/main.h>
+
 #include "pbd/undo.h"
 #include "pbd/error.h"
 #include "pbd/enumwriter.h"
@@ -1367,7 +1369,17 @@ Session::locate (framepos_t target_frame, bool with_roll, bool with_flush, bool 
 	}
 
 	_last_roll_location = _last_roll_or_reversal_location =  _transport_frame;
-	Located (); /* EMIT SIGNAL */
+	if (synced_to_engine () && _transport_frame != _engine.transport_frame ()) {
+		Glib::signal_timeout().connect_once(sigc::mem_fun(*this, &Session::emit_located), 50);
+	} else {
+		Located (); /* EMIT SIGNAL */
+	}
+}
+
+void
+Session::emit_located ()
+{
+	Located();
 }
 
 /** Set the transport speed.

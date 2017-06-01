@@ -398,6 +398,8 @@ class LIBARDOUR_API Session : public PBD::StatefulDestructible, public PBD::Scop
 	/** emitted when a locate has occurred */
 	PBD::Signal0<void> Located;
 
+	void emit_located ();
+
 	PBD::Signal1<void,RouteList&> RouteAdded;
 	/** Emitted when a property of one of our route groups changes.
 	 *  The parameter is the RouteGroup that has changed.
