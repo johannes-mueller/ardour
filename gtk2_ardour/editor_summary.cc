@@ -21,6 +21,9 @@
 
 #include "canvas/debug.h"
 
+#include <gtkmm/menu.h>
+#include <gtkmm/menuitem.h>
+
 #include "time_axis_view.h"
 #include "streamview.h"
 #include "editor_summary.h"
@@ -35,6 +38,8 @@
 #include "route_time_axis.h"
 #include "ui_config.h"
 
+#include "pbd/i18n.h"
+
 using namespace std;
 using namespace ARDOUR;
 using Gtkmm2ext::Keyboard;
@@ -46,7 +51,6 @@ EditorSummary::EditorSummary (Editor* e)
 	: EditorComponent (e),
 	  _start (0),
 	  _end (1),
-	  _overhang_fraction (0.02),
 	  _x_scale (1),
 	  _track_height (16),
 	  _last_playhead (-1),
@@ -112,10 +116,10 @@ EditorSummary::set_session (Session* s)
 		_session->StartTimeChanged.connect (_session_connections, invalidator (*this), boost::bind (&EditorSummary::set_background_dirty, this), gui_context());
 		_session->EndTimeChanged.connect (_session_connections, invalidator (*this), boost::bind (&EditorSummary::set_background_dirty, this), gui_context());
 		_editor->selection->RegionsChanged.connect (sigc::mem_fun(*this, &EditorSummary::set_background_dirty));
-	
-		_leftmost = _session->current_start_frame();
-		_rightmost = min (_session->nominal_frame_rate()*60*2, _session->current_end_frame() );  //always show at least 2 minutes
 	}
+
+	_leftmost = max_samplepos;
+	_rightmost = 0;
 }
 
 void
@@ -134,19 +138,19 @@ EditorSummary::render_background_image ()
 
 	/* compute start and end points for the summary */
 
-	framecnt_t const session_length = _session->current_end_frame() - _session->current_start_frame ();
-	double theoretical_start = _session->current_start_frame() - session_length * _overhang_fraction;
-	double theoretical_end = _session->current_end_frame();
+	std::pair<samplepos_t, samplepos_t> ext = _editor->session_gui_extents();
+	double theoretical_start = ext.first;
+	double theoretical_end = ext.second;
 
 	/* the summary should encompass the full extent of everywhere we've visited since the session was opened */
-	if ( _leftmost < theoretical_start)
+	if (_leftmost < theoretical_start)
 		theoretical_start = _leftmost;
-	if ( _rightmost > theoretical_end )
+	if (_rightmost > theoretical_end)
 		theoretical_end = _rightmost;
 
 	/* range-check */
 	_start = theoretical_start > 0 ? theoretical_start : 0;
-	_end = theoretical_end + session_length * _overhang_fraction;
+	_end = theoretical_end < max_samplepos ? theoretical_end : max_samplepos;
 
 	/* calculate x scale */
 	if (_end != _start) {
@@ -180,24 +184,24 @@ EditorSummary::render_background_image ()
 
 		/* paint a non-bg colored strip to represent the track itself */
 
-		if ( _track_height > 4 ) {
+		if (_track_height > 4) {
 			cairo_set_source_rgb (cr, 0.2, 0.2, 0.2);
 			cairo_set_line_width (cr, _track_height - 1);
 			cairo_move_to (cr, 0, y + _track_height / 2);
 			cairo_line_to (cr, get_width(), y + _track_height / 2);
 			cairo_stroke (cr);
 		}
-		
+
 		StreamView* s = (*i)->view ();
 
 		if (s) {
 			cairo_set_line_width (cr, _track_height * 0.8);
 
 			s->foreach_regionview (sigc::bind (
-						       sigc::mem_fun (*this, &EditorSummary::render_region),
-						       cr,
-						       y + _track_height / 2
-						       ));
+			                                   sigc::mem_fun (*this, &EditorSummary::render_region),
+			                                   cr,
+			                                   y + _track_height / 2
+			                                  ));
 		}
 
 		y += _track_height;
@@ -208,11 +212,11 @@ EditorSummary::render_background_image ()
 	cairo_set_line_width (cr, 1);
 	cairo_set_source_rgb (cr, 1, 1, 0);
 
-	const double p = (_session->current_start_frame() - _start) * _x_scale;
+	const double p = (_session->current_start_sample() - _start) * _x_scale;
 	cairo_move_to (cr, p, 0);
 	cairo_line_to (cr, p, get_height());
 
-	double const q = (_session->current_end_frame() - _start) * _x_scale;
+	double const q = (_session->current_end_sample() - _start) * _x_scale;
 	cairo_move_to (cr, q, 0);
 	cairo_line_to (cr, q, get_height());
 	cairo_stroke (cr);
@@ -233,18 +237,18 @@ EditorSummary::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle
 	}
 
 	/* maintain the leftmost and rightmost locations that we've ever reached */
-	framecnt_t const leftmost = _editor->leftmost_sample ();
-	if ( leftmost < _leftmost) {
+	samplecnt_t const leftmost = _editor->leftmost_sample ();
+	if (leftmost < _leftmost) {
 		_leftmost = leftmost;
 		_background_dirty = true;
 	}
-	framecnt_t const rightmost = leftmost + _editor->current_page_samples();
-	if ( rightmost > _rightmost) {
+	samplecnt_t const rightmost = leftmost + _editor->current_page_samples();
+	if (rightmost > _rightmost) {
 		_rightmost = rightmost;
 		_background_dirty = true;
 	}
 
-	//draw the background (regions, markers, etc ) if they've changed
+	/* draw the background (regions, markers, etc) if they've changed */
 	if (!_image || _background_dirty) {
 		render_background_image ();
 		_background_dirty = false;
@@ -285,7 +289,7 @@ EditorSummary::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle
 	/* XXX: colour should be set from configuration file */
 	cairo_set_source_rgba (cr, 1, 0, 0, 1);
 
-	const double ph= playhead_frame_to_position (_editor->playhead_cursor->current_frame());
+	const double ph= playhead_sample_to_position (_editor->playhead_cursor->current_sample());
 	cairo_move_to (cr, ph, 0);
 	cairo_line_to (cr, ph, get_height());
 	cairo_stroke (cr);
@@ -340,9 +344,9 @@ EditorSummary::set_overlays_dirty ()
 
 /** Set the summary so that just the overlays (viewbox, playhead etc.) in a given area will be re-rendered */
 void
-EditorSummary::set_overlays_dirty (int x, int y, int w, int h)
+EditorSummary::set_overlays_dirty_rect (int x, int y, int w, int h)
 {
-	ENSURE_GUI_THREAD (*this, &EditorSummary::set_overlays_dirty);
+	ENSURE_GUI_THREAD (*this, &EditorSummary::set_overlays_dirty_rect);
 	queue_draw_area (x, y, w, h);
 }
 
@@ -403,7 +407,7 @@ EditorSummary::on_key_press_event (GdkEventKey* key)
 		if (key->keyval == set_playhead_accel.accel_key && (int) key->state == set_playhead_accel.accel_mods) {
 			if (_session) {
 				get_pointer (x, y);
-				_session->request_locate (_start + (framepos_t) x / _x_scale, _session->transport_rolling());
+				_session->request_locate (_start + (samplepos_t) x / _x_scale, _session->transport_rolling());
 				return true;
 			}
 		}
@@ -425,6 +429,8 @@ EditorSummary::on_key_release_event (GdkEventKey* key)
 	return false;
 }
 
+#include "gtkmm2ext/utils.h"
+
 /** Handle a button press.
  *  @param ev GTK event.
  */
@@ -432,6 +438,16 @@ bool
 EditorSummary::on_button_press_event (GdkEventButton* ev)
 {
 	_old_follow_playhead = _editor->follow_playhead ();
+
+	if (ev->button == 3) { // right-click:  show the reset menu action
+		using namespace Gtk::Menu_Helpers;
+		Gtk::Menu* m = manage (new Gtk::Menu);
+		MenuList& items = m->items ();
+		items.push_back(MenuElem(_("Reset Summary to Extents"),
+			sigc::mem_fun(*this, &EditorSummary::reset_to_extents)));
+		m->popup (ev->button, ev->time);
+		return true;
+	}
 
 	if (ev->button != 1) {
 		return true;
@@ -479,7 +495,7 @@ EditorSummary::on_button_press_event (GdkEventButton* ev)
 		_editor->set_follow_playhead (false);
 
 		_move_dragging = true;
-		
+
 		_last_mx = ev->x;
 		_last_my = ev->y;
 		_last_dx = 0;
@@ -487,7 +503,7 @@ EditorSummary::on_button_press_event (GdkEventButton* ev)
 		_last_y_delta = 0;
 
 		get_window()->set_cursor (*_editor->_cursors->expand_left_right);
-	
+
 	}
 
 	return true;
@@ -558,6 +574,18 @@ EditorSummary::get_position (double x, double y) const
 }
 
 void
+EditorSummary::reset_to_extents()
+{
+	/* reset as if the user never went anywhere outside the extents */
+	_leftmost = max_samplepos;
+	_rightmost = 0;
+
+	_editor->temporal_zoom_extents ();
+	set_background_dirty ();
+}
+
+
+void
 EditorSummary::set_cursor (Position p)
 {
 	switch (p) {
@@ -581,7 +609,7 @@ EditorSummary::set_cursor (Position p)
 }
 
 void
-EditorSummary::summary_zoom_step ( int steps /* positive steps to zoom "out" , negative steps to zoom "in" */  )
+EditorSummary::summary_zoom_step (int steps /* positive steps to zoom "out" , negative steps to zoom "in" */  )
 {
 	pair<double, double> xn;
 
@@ -590,9 +618,12 @@ EditorSummary::summary_zoom_step ( int steps /* positive steps to zoom "out" , n
 	xn.first -= steps;
 	xn.second += steps;
 
-	//for now, disallow really close zooming-in from the scroomer. ( currently it causes the start-offset to 'walk' because of integer limitations.  to fix this, probably need to maintain float throught the get/set_editor() path )
+	/* for now, disallow really close zooming-in from the scroomer. (Currently it
+	 * causes the start-offset to 'walk' because of integer limitations.
+	 * To fix this, probably need to maintain float throught the get/set_editor() path.)
+	 */
 	if (steps<0) {
-      if ( (xn.second-xn.first) < 2)
+      if ((xn.second - xn.first) < 2)
 		return;
 	}
 
@@ -606,42 +637,50 @@ EditorSummary::on_motion_notify_event (GdkEventMotion* ev)
 {
 	if (_move_dragging) {
 
-		//To avoid accidental zooming, the mouse must move exactly vertical, not diagonal, to trigger a zoom step
-		//we use screen coordinates for this, not canvas-based grab_x
+		/* To avoid accidental zooming, the mouse must move exactly vertical, not diagonal, to trigger a zoom step
+		 * we use screen coordinates for this, not canvas-based grab_x */
 		double mx = ev->x;
 		double dx = mx - _last_mx;
 		double my = ev->y;
 		double dy = my - _last_my;
 
-		//do zooming in windowed "steps" so it feels more reversible ?
+		/* do zooming in windowed "steps" so it feels more reversible ? */
 		const int stepsize = 2;
 		int y_delta = _start_mouse_y - my;
 		y_delta = y_delta / stepsize;
 
-		//do the zoom?
+		/* do the zoom? */
 		const float zscale = 3;
-		if ( (dx==0) && (_last_dx ==0) && (y_delta != _last_y_delta) ) {
+		if ((dx == 0) && (_last_dx == 0) && (y_delta != _last_y_delta)) {
 
-			summary_zoom_step( dy * zscale );
+			summary_zoom_step (dy * zscale);
 
-			//after the zoom we must re-calculate x-pos grabs
+			/* after the zoom we must re-calculate x-pos grabs */
 			pair<double, double> xr;
 			get_editor (&xr);
 			_start_editor_x = xr;
 			_start_mouse_x = ev->x;
-			
+
 			_last_y_delta = y_delta;
 		}
-		
-		//always track horizontal movement, if any
-		if ( dx != 0 ) {
+
+		/* always track horizontal movement, if any */
+		if (dx != 0) {
 
 			double x = _start_editor_x.first;
 			x += ev->x - _start_mouse_x;
+
 			if (x < 0) {
 				x = 0;
 			}
-			set_editor (x);
+
+			/* zoom-behavior-tweaks: protect the right edge from expanding beyond the end */
+			pair<double, double> xr;
+			get_editor (&xr);
+			double w = xr.second - xr.first;
+			if (x + w < get_width()) {
+				set_editor (x);
+			}
 		}
 
 		_last_my = my;
@@ -658,7 +697,12 @@ EditorSummary::on_motion_notify_event (GdkEventMotion* ev)
 		if (_zoom_trim_position == LEFT) {
 			xr.first += dx;
 		} else if (_zoom_trim_position == RIGHT) {
-			xr.second += dx;
+
+			/* zoom-behavior-tweaks: protect the right edge from expanding beyond the edge */
+			if ((xr.second + dx) < get_width()) {
+				xr.second += dx;
+			}
+
 		} else {
 			assert (0);
 			xr.first = -1; /* do not change */
@@ -669,7 +713,7 @@ EditorSummary::on_motion_notify_event (GdkEventMotion* ev)
 		set_editor (xr);
 
 	} else {
-		set_cursor ( get_position(ev->x, ev->y) );
+		set_cursor (get_position (ev->x, ev->y));
 	}
 
 	return true;
@@ -702,19 +746,19 @@ EditorSummary::on_scroll_event (GdkEventScroll* ev)
 
 	switch (ev->direction) {
 		case GDK_SCROLL_UP: {
-			
-			summary_zoom_step( -4 );
-		
+
+			summary_zoom_step (-4);
+
 			return true;
 		} break;
-		
+
 		case GDK_SCROLL_DOWN: {
-			
-			summary_zoom_step( 4 );
-		
+
+			summary_zoom_step (4);
+
 			return true;
 		} break;
-		
+
 		case GDK_SCROLL_LEFT:
 			if (Keyboard::modifier_state_equals (ev->state, Keyboard::ScrollZoomHorizontalModifier)) {
 				_editor->temporal_zoom_step (false);
@@ -847,14 +891,14 @@ EditorSummary::set_editor_x (pair<double, double> x)
 }
 
 void
-EditorSummary::playhead_position_changed (framepos_t p)
+EditorSummary::playhead_position_changed (samplepos_t p)
 {
 	int const o = int (_last_playhead);
-	int const n = int (playhead_frame_to_position (p));
+	int const n = int (playhead_sample_to_position (p));
 	if (_session && o != n) {
 		int a = max(2, min (o, n));
 		int b = max (o, n);
-		set_overlays_dirty (a - 2, 0, b + 2, get_height ());
+		set_overlays_dirty_rect (a - 2, 0, b + 2, get_height ());
 	}
 }
 
@@ -905,13 +949,13 @@ EditorSummary::route_gui_changed (PBD::PropertyChange const& what_changed)
 }
 
 double
-EditorSummary::playhead_frame_to_position (framepos_t t) const
+EditorSummary::playhead_sample_to_position (samplepos_t t) const
 {
 	return (t - _start) * _x_scale;
 }
 
-framepos_t
-EditorSummary::position_to_playhead_frame_to_position (double pos) const
+samplepos_t
+EditorSummary::position_to_playhead_sample_to_position (double pos) const
 {
 	return _start  + (pos * _x_scale);
 }

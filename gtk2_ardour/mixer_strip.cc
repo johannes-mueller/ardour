@@ -504,7 +504,7 @@ MixerStrip::trim_start_touch ()
 {
 	assert (_route && _session);
 	if (route()->trim() && route()->trim()->active() && route()->n_inputs().n_audio() > 0) {
-		route()->trim()->gain_control ()->start_touch (_session->transport_frame());
+		route()->trim()->gain_control ()->start_touch (_session->transport_sample());
 	}
 }
 
@@ -513,7 +513,7 @@ MixerStrip::trim_end_touch ()
 {
 	assert (_route && _session);
 	if (route()->trim() && route()->trim()->active() && route()->n_inputs().n_audio() > 0) {
-		route()->trim()->gain_control ()->stop_touch (_session->transport_frame());
+		route()->trim()->gain_control ()->stop_touch (_session->transport_sample());
 	}
 }
 
@@ -690,10 +690,6 @@ MixerStrip::set_route (boost::shared_ptr<Route> rt)
 	if (_route->panner_shell()) {
 		update_panner_choices();
 		_route->panner_shell()->Changed.connect (route_connections, invalidator (*this), boost::bind (&MixerStrip::connect_to_pan, this), gui_context());
-	}
-
-	if (is_audio_track()) {
-		audio_track()->DiskstreamChanged.connect (route_connections, invalidator (*this), boost::bind (&MixerStrip::diskstream_changed, this), gui_context());
 	}
 
 	_route->comment_changed.connect (route_connections, invalidator (*this), boost::bind (&MixerStrip::setup_comment_button, this), gui_context());
@@ -904,25 +900,35 @@ MixerStrip::output_press (GdkEventButton *ev)
 
 		boost::shared_ptr<ARDOUR::BundleList> b = _session->bundles ();
 
-		/* give user bundles first chance at being in the menu */
+		/* guess the user-intended main type of the route output */
+		DataType intended_type = guess_main_type(false);
 
-		for (ARDOUR::BundleList::iterator i = b->begin(); i != b->end(); ++i) {
-			if (boost::dynamic_pointer_cast<UserBundle> (*i)) {
-				maybe_add_bundle_to_output_menu (*i, current);
-			}
+		/* try adding the master bus first */
+		boost::shared_ptr<Route> master = _session->master_out();
+		if (master) {
+			maybe_add_bundle_to_output_menu (master->input()->bundle(), current, intended_type);
 		}
 
-		for (ARDOUR::BundleList::iterator i = b->begin(); i != b->end(); ++i) {
-			if (boost::dynamic_pointer_cast<UserBundle> (*i) == 0) {
-				maybe_add_bundle_to_output_menu (*i, current);
-			}
-		}
-
+		/* then other routes inputs */
 		boost::shared_ptr<ARDOUR::RouteList> routes = _session->get_routes ();
 		RouteList copy = *routes;
 		copy.sort (RouteCompareByName ());
 		for (ARDOUR::RouteList::const_iterator i = copy.begin(); i != copy.end(); ++i) {
-			maybe_add_bundle_to_output_menu ((*i)->input()->bundle(), current);
+			maybe_add_bundle_to_output_menu ((*i)->input()->bundle(), current, intended_type);
+		}
+
+		/* then try adding user bundles, often labeled/grouped physical inputs */
+		for (ARDOUR::BundleList::iterator i = b->begin(); i != b->end(); ++i) {
+			if (boost::dynamic_pointer_cast<UserBundle> (*i)) {
+				maybe_add_bundle_to_output_menu (*i, current, intended_type);
+			}
+		}
+
+		/* then all other bundles, including physical outs or other sofware */
+		for (ARDOUR::BundleList::iterator i = b->begin(); i != b->end(); ++i) {
+			if (boost::dynamic_pointer_cast<UserBundle> (*i) == 0) {
+				maybe_add_bundle_to_output_menu (*i, current, intended_type);
+			}
 		}
 
 		if (citems.size() == n_with_separator) {
@@ -1068,13 +1074,7 @@ MixerStrip::bundle_input_chosen (boost::shared_ptr<ARDOUR::Bundle> c)
 		return;
 	}
 
-	ARDOUR::BundleList current = _route->input()->bundles_connected ();
-
-	if (std::find (current.begin(), current.end(), c) == current.end()) {
-		_route->input()->connect_ports_to_bundle (c, true, this);
-	} else {
-		_route->input()->disconnect_ports_from_bundle (c, this);
-	}
+	_route->input()->connect_ports_to_bundle (c, true, this);
 }
 
 void
@@ -1084,13 +1084,7 @@ MixerStrip::bundle_output_chosen (boost::shared_ptr<ARDOUR::Bundle> c)
 		return;
 	}
 
-	ARDOUR::BundleList current = _route->output()->bundles_connected ();
-
-	if (std::find (current.begin(), current.end(), c) == current.end()) {
-		_route->output()->connect_ports_to_bundle (c, true, this);
-	} else {
-		_route->output()->disconnect_ports_from_bundle (c, this);
-	}
+	_route->output()->connect_ports_to_bundle (c, true, true, this);
 }
 
 void
@@ -1118,23 +1112,41 @@ MixerStrip::maybe_add_bundle_to_input_menu (boost::shared_ptr<Bundle> b, ARDOUR:
 }
 
 void
-MixerStrip::maybe_add_bundle_to_output_menu (boost::shared_ptr<Bundle> b, ARDOUR::BundleList const& /*current*/)
+MixerStrip::maybe_add_bundle_to_output_menu (boost::shared_ptr<Bundle> b, ARDOUR::BundleList const& /*current*/,
+                                             DataType type)
 {
 	using namespace Menu_Helpers;
 
-	if (b->ports_are_inputs() == false || b->nchannels() != _route->n_outputs() || *b == *_route->input()->bundle()) {
+	/* The bundle should be an input one, but not ours */
+	if (b->ports_are_inputs() == false || *b == *_route->input()->bundle()) {
 		return;
 	}
 
+	/* Don't add the monitor input unless we are Master */
+	boost::shared_ptr<Route> monitor = _session->monitor_out();
+	if ((!_route->is_master()) && monitor && b->has_same_ports (monitor->input()->bundle()))
+		return;
+
+	/* It should either match exactly our outputs (if |type| is DataType::NIL)
+	 * or have the same number of |type| channels than our outputs. */
+	if (type == DataType::NIL) {
+		if(b->nchannels() != _route->n_outputs())
+			return;
+	} else {
+		if (b->nchannels().n(type) != _route->n_outputs().n(type))
+			return;
+	}
+
+	/* Avoid adding duplicates */
 	list<boost::shared_ptr<Bundle> >::iterator i = output_menu_bundles.begin ();
 	while (i != output_menu_bundles.end() && b->has_same_ports (*i) == false) {
 		++i;
 	}
-
 	if (i != output_menu_bundles.end()) {
 		return;
 	}
 
+	/* Now add the bundle to the menu */
 	output_menu_bundles.push_back (b);
 
 	MenuList& citems = output_menu.items();
@@ -1195,9 +1207,55 @@ MixerStrip::update_panner_choices ()
 	panners.set_available_panners(PannerManager::instance().PannerManager::get_available_panners(in, out));
 }
 
+DataType
+MixerStrip::guess_main_type(bool for_input, bool favor_connected) const
+{
+	/* The heuristic follows these principles:
+	 *  A) If all ports that the user connected are of the same type, then he
+	 *     very probably intends to use the IO with that type. A common subcase
+	 *     is when the IO has only ports of the same type (connected or not).
+	 *  B) If several types of ports are connected, then we should guess based
+	 *     on the likeliness of the user wanting to use a given type.
+	 *     We assume that the DataTypes are ordered from the most likely to the
+	 *     least likely when iterating or comparing them with "<".
+	 *  C) If no port is connected, the same logic can be applied with all ports
+	 *     instead of connected ones. TODO: Try other ideas, for instance look at
+	 *     the last plugin output when |for_input| is false (note: when StrictIO
+	 *     the outs of the last plugin should be the same as the outs of the route
+	 *     modulo the panner which forwards non-audio anyway).
+	 * All of these constraints are respected by the following algorithm that
+	 * just returns the most likely datatype found in connected ports if any, or
+	 * available ports if any (since if all ports are of the same type, the most
+	 * likely found will be that one obviously). */
+
+	boost::shared_ptr<IO> io = for_input ? _route->input() : _route->output();
+
+	/* Find most likely type among connected ports */
+	if (favor_connected) {
+		DataType type = DataType::NIL; /* NIL is always last so least likely */
+		for (PortSet::iterator p = io->ports().begin(); p != io->ports().end(); ++p) {
+			if (p->connected() && p->type() < type)
+				type = p->type();
+		}
+		if (type != DataType::NIL) {
+			/* There has been a connected port (necessarily non-NIL) */
+			return type;
+		}
+	}
+
+	/* Find most likely type among available ports.
+	 * The iterator stops before NIL. */
+	for (DataType::iterator t = DataType::begin(); t != DataType::end(); ++t) {
+		if (io->n_ports().n(*t) > 0)
+			return *t;
+	}
+
+	/* No port at all, return the most likely datatype by default */
+	return DataType::front();
+}
+
 /*
  * Output port labelling
- * =====================
  *
  * Case 1: Each output has one connection, all connections are to system:playback_%i
  *   out 1 -> system:playback_1
@@ -1221,8 +1279,9 @@ MixerStrip::update_panner_choices ()
  * Default case (unusual routing):
  *   Display as: *number of connections*
  *
+ *
  * Tooltips
- * ========
+ *
  * .-----------------------------------------------.
  * | Mixdown                                       |
  * | out 1 -> ardour:master/in 1, jamin:input/in 1 |
@@ -1235,269 +1294,214 @@ MixerStrip::update_panner_choices ()
  */
 
 void
-MixerStrip::update_io_button (boost::shared_ptr<ARDOUR::Route> route, Width width, bool for_input)
+MixerStrip::update_io_button (bool for_input)
 {
-	uint32_t io_count;
-	uint32_t io_index;
-	boost::shared_ptr<IO> io;
-	boost::shared_ptr<Port> port;
-	vector<string> port_connections;
+	ostringstream tooltip;
+	ostringstream label;
+	bool have_label = false;
 
 	uint32_t total_connection_count = 0;
-	uint32_t io_connection_count = 0;
-	uint32_t ardour_connection_count = 0;
-	uint32_t system_connection_count = 0;
-	uint32_t other_connection_count = 0;
 	uint32_t typed_connection_count = 0;
+	bool each_typed_port_has_one_connection = true;
 
-	ostringstream label;
+	DataType dt = guess_main_type(for_input);
+	boost::shared_ptr<IO> io = for_input ? _route->input() : _route->output();
 
-	bool have_label = false;
-	bool each_io_has_one_connection = true;
-
-	string connection_name;
-	string ardour_track_name;
-	string other_connection_type;
-	string system_ports;
-	string system_port;
-
-	ostringstream tooltip;
-	char * tooltip_cstr;
-
-	/* To avoid confusion, the button caption only shows connections that match the expected datatype
-	 *
-	 * First of all, if the user made only connections to a given type, we should use that one since
-	 * it is very probably what the user expects. If there are several connections types, then show
-	 * audio ones as primary, which matches expectations for both audio tracks with midi control and
-	 * synthesisers. This first heuristic can be expressed with these two rules:
-	 * A) If there are connected audio ports, consider audio as primary type.
-	 * B) Else, if there are connected midi ports, consider midi as primary type.
-	 *
-	 * If there are no connected ports, then we choose the primary type based on the type of existing
-	 * but unconnected ports. Again:
-	 * C) If there are audio ports, consider audio as primary type.
-	 * D) Else, if there are midi ports, consider midi as primary type. */
-
-	DataType dt = DataType::AUDIO;
-	bool match = false;
-
+	/* Fill in the tooltip. Also count:
+	 *  - The total number of connections.
+	 *  - The number of main-typed connections.
+	 *  - Whether each main-typed port has exactly one connection. */
 	if (for_input) {
-		io = route->input();
+		tooltip << string_compose (_("<b>INPUT</b> to %1"),
+				Gtkmm2ext::markup_escape_text (_route->name()));
 	} else {
-		io = route->output();
+		tooltip << string_compose (_("<b>OUTPUT</b> from %1"),
+				Gtkmm2ext::markup_escape_text (_route->name()));
 	}
 
-	io_count = io->n_ports().n_total();
-	for (io_index = 0; io_index < io_count; ++io_index) {
-		port = io->nth (io_index);
-		if (port->connected()) {
-			match = true;
-			if (port->type() == DataType::AUDIO) {
-				/* Rule A) applies no matter the remaining ports */
-				dt = DataType::AUDIO;
-				break;
-			}
-			if (port->type() == DataType::MIDI) {
-				/* Rule B) is a good candidate... */
-				dt = DataType::MIDI;
-				/* ...but continue the loop to check remaining ports for rule A) */
-			}
-		}
-	}
-
-	if (!match) {
-		/* Neither rule A) nor rule B) matched */
-		if ( io->n_ports().n_audio() > 0 ) {
-			/* Rule C */
-			dt = DataType::AUDIO;
-		} else if ( io->n_ports().n_midi() > 0 ) {
-			/* Rule D */
-			dt = DataType::MIDI;
-		}
-	}
-
-	if ( dt == DataType::MIDI ) {
-		tooltip << _("MIDI ");
-	}
-
-	if (for_input) {
-		tooltip << string_compose (_("<b>INPUT</b> to %1"), Gtkmm2ext::markup_escape_text (route->name()));
-	} else {
-		tooltip << string_compose (_("<b>OUTPUT</b> from %1"), Gtkmm2ext::markup_escape_text (route->name()));
-	}
-
-	for (io_index = 0; io_index < io_count; ++io_index) {
-		port = io->nth (io_index);
-
-		port_connections.clear ();
+	string arrow = Gtkmm2ext::markup_escape_text(for_input ? " <- " : " -> ");
+	vector<string> port_connections;
+	for (PortSet::iterator port = io->ports().begin();
+	                       port != io->ports().end();
+	                       ++port) {
+		port_connections.clear();
 		port->get_connections(port_connections);
 
-		//ignore any port connections that don't match our DataType
-		if (port->type() != dt) {
-			if (!port_connections.empty()) {
-				++typed_connection_count;
+		uint32_t port_connection_count = 0;
+
+		for (vector<string>::iterator i = port_connections.begin();
+		                              i != port_connections.end();
+		                              ++i) {
+			++port_connection_count;
+
+			if (port_connection_count == 1) {
+				tooltip << endl << Gtkmm2ext::markup_escape_text (
+						port->name().substr(port->name().find("/") + 1));
+				tooltip << arrow;
+			} else {
+				tooltip << ", ";
 			}
-			continue;
+
+			tooltip << Gtkmm2ext::markup_escape_text(*i);
 		}
 
-		io_connection_count = 0;
-
-		if (!port_connections.empty()) {
-			for (vector<string>::iterator i = port_connections.begin(); i != port_connections.end(); ++i) {
-				string pn = "";
-				string& connection_name (*i);
-
-				if (connection_name.find("system:") == 0) {
-					pn = AudioEngine::instance()->get_pretty_name_by_name (connection_name);
-				}
-
-				if (io_connection_count == 0) {
-					tooltip << endl << Gtkmm2ext::markup_escape_text (port->name().substr(port->name().find("/") + 1))
-						<< " -> "
-						<< Gtkmm2ext::markup_escape_text ( pn.empty() ? connection_name : pn );
-				} else {
-					tooltip << ", "
-						<< Gtkmm2ext::markup_escape_text ( pn.empty() ? connection_name : pn );
-				}
-
-				if (connection_name.find(RouteUI::program_port_prefix) == 0) {
-					if (ardour_track_name.empty()) {
-						// "ardour:Master/in 1" -> "ardour:Master/"
-						string::size_type slash = connection_name.find("/");
-						if (slash != string::npos) {
-							ardour_track_name = connection_name.substr(0, slash + 1);
-						}
-					}
-
-					if (connection_name.find(ardour_track_name) == 0) {
-						++ardour_connection_count;
-					}
-				} else if (!pn.empty()) {
-					if (system_ports.empty()) {
-						system_ports += pn;
-					} else {
-						system_ports += "/" + pn;
-					}
-					if (connection_name.find("system:") == 0) {
-						++system_connection_count;
-					}
-				} else if (connection_name.find("system:midi_") == 0) {
-					if (for_input) {
-						// "system:midi_capture_123" -> "123"
-						system_port = "M " + connection_name.substr(20);
-					} else {
-						// "system:midi_playback_123" -> "123"
-						system_port = "M " + connection_name.substr(21);
-					}
-
-					if (system_ports.empty()) {
-						system_ports += system_port;
-					} else {
-						system_ports += "/" + system_port;
-					}
-
-					++system_connection_count;
-
-				} else if (connection_name.find("system:") == 0) {
-					if (for_input) {
-						// "system:capture_123" -> "123"
-						system_port = connection_name.substr(15);
-					} else {
-						// "system:playback_123" -> "123"
-						system_port = connection_name.substr(16);
-					}
-
-					if (system_ports.empty()) {
-						system_ports += system_port;
-					} else {
-						system_ports += "/" + system_port;
-					}
-
-					++system_connection_count;
-				} else {
-					if (other_connection_type.empty()) {
-						// "jamin:in 1" -> "jamin:"
-						other_connection_type = connection_name.substr(0, connection_name.find(":") + 1);
-					}
-
-					if (connection_name.find(other_connection_type) == 0) {
-						++other_connection_count;
-					}
-				}
-
-				++total_connection_count;
-				++io_connection_count;
-			}
+		total_connection_count += port_connection_count;
+		if (port->type() == dt) {
+			typed_connection_count += port_connection_count;
+			each_typed_port_has_one_connection &= (port_connection_count == 1);
 		}
 
-		if (io_connection_count != 1) {
-			each_io_has_one_connection = false;
-		}
 	}
 
 	if (total_connection_count == 0) {
 		tooltip << endl << _("Disconnected");
 	}
 
-	tooltip_cstr = new char[tooltip.str().size() + 1];
-	strcpy(tooltip_cstr, tooltip.str().c_str());
-
-	if (for_input) {
-		set_tooltip (&input_button, tooltip_cstr);
-	} else {
-		set_tooltip (&output_button, tooltip_cstr);
+	if (typed_connection_count == 0) {
+		label << "-";
+		have_label = true;
 	}
 
-	delete [] tooltip_cstr;
-
-	if (each_io_has_one_connection) {
-		if (total_connection_count == ardour_connection_count) {
-			// all connections are to the same track in ardour
-			// "ardour:Master/" -> "Master"
-			string::size_type slash = ardour_track_name.find("/");
-			if (slash != string::npos) {
-				const size_t ppps = RouteUI::program_port_prefix.size (); // "ardour:"
-				label << ardour_track_name.substr (ppps, slash - ppps);
+	/* Are all main-typed channels connected to the same route ? */
+	if (!have_label) {
+		boost::shared_ptr<ARDOUR::RouteList> routes = _session->get_routes ();
+		for (ARDOUR::RouteList::const_iterator route = routes->begin();
+		                                       route != routes->end();
+		                                       ++route) {
+			boost::shared_ptr<IO> dest_io =
+				for_input ? (*route)->output() : (*route)->input();
+			if (io->bundle()->connected_to(dest_io->bundle(),
+			                               _session->engine(),
+			                               dt, true)) {
+				label << Gtkmm2ext::markup_escape_text ((*route)->name());
 				have_label = true;
+				break;
 			}
 		}
-		else if (total_connection_count == system_connection_count) {
-			// all connections are to system ports
-			label << system_ports;
-			have_label = true;
+	}
+
+	/* Are all main-typed channels connected to the same (user) bundle ? */
+	if (!have_label) {
+		boost::shared_ptr<ARDOUR::BundleList> bundles = _session->bundles ();
+		for (ARDOUR::BundleList::iterator bundle = bundles->begin();
+		                                  bundle != bundles->end();
+		                                  ++bundle) {
+			if (boost::dynamic_pointer_cast<UserBundle> (*bundle) == 0)
+				continue;
+			if (io->bundle()->connected_to(*bundle, _session->engine(),
+			                               dt, true)) {
+				label << Gtkmm2ext::markup_escape_text ((*bundle)->name());
+				have_label = true;
+				break;
+			}
 		}
-		else if (total_connection_count == other_connection_count) {
-			// all connections are to the same external program eg jamin
-			// "jamin:" -> "jamin"
-			label << other_connection_type.substr(0, other_connection_type.size() - 1);
+	}
+
+	/* Is each main-typed channel only connected to a physical output ? */
+	if (!have_label && each_typed_port_has_one_connection) {
+		ostringstream temp_label;
+		vector<string> phys;
+		string playorcapture;
+		if (for_input) {
+			_session->engine().get_physical_inputs(dt, phys);
+			playorcapture = "capture_";
+		} else {
+			_session->engine().get_physical_outputs(dt, phys);
+			playorcapture = "playback_";
+		}
+		for (PortSet::iterator port = io->ports().begin(dt);
+		                       port != io->ports().end(dt);
+		                       ++port) {
+			string pn = "";
+			for (vector<string>::iterator s = phys.begin();
+			                              s != phys.end();
+			                              ++s) {
+				if (!port->connected_to(*s))
+					continue;
+				pn = AudioEngine::instance()->get_pretty_name_by_name(*s);
+				if (pn.empty()) {
+					string::size_type start = (*s).find(playorcapture);
+					if (start != string::npos) {
+						pn = (*s).substr(start + playorcapture.size());
+					}
+				}
+				break;
+			}
+			if (pn.empty()) {
+				temp_label.str(""); /* erase the failed attempt */
+				break;
+			}
+			if (port != io->ports().begin(dt))
+				temp_label << "/";
+			temp_label << pn;
+		}
+
+		if (!temp_label.str().empty()) {
+			label << temp_label.str();
 			have_label = true;
 		}
 	}
 
-	if (!have_label) {
-		if (total_connection_count == 0) {
-			// Disconnected
-			label << "-";
-		} else {
-			// Odd configuration
-			label << "*" << total_connection_count << "*";
+	/* Is each main-typed channel connected to a single and different port with
+	 * the same client name (e.g. another JACK client) ? */
+	if (!have_label && each_typed_port_has_one_connection) {
+		string maybe_client = "";
+		vector<string> connections;
+		for (PortSet::iterator port = io->ports().begin(dt);
+		                       port != io->ports().end(dt);
+		                       ++port) {
+			port_connections.clear();
+			port->get_connections(port_connections);
+			string connection = port_connections.front();
+
+			vector<string>::iterator i = connections.begin();
+			while (i != connections.end() && *i != connection) {
+				++i;
+			}
+			if (i != connections.end())
+				break; /* duplicate connection */
+			connections.push_back(connection);
+
+			connection = connection.substr(0, connection.find(":"));
+			if (maybe_client.empty())
+				maybe_client = connection;
+			if (maybe_client != connection)
+				break;
 		}
-		if (typed_connection_count > 0) {
-			label << "\u2295"; // circled plus
+		if (connections.size() == io->n_ports().n(dt)) {
+			label << maybe_client;
+			have_label = true;
 		}
 	}
+
+	/* Odd configuration */
+	if (!have_label) {
+		label << "*" << total_connection_count << "*";
+	}
+
+	if (total_connection_count > typed_connection_count) {
+		label << "\u2295"; /* circled plus */
+	}
+
+	/* Actually set the properties of the button */
+	char * cstr = new char[tooltip.str().size() + 1];
+	strcpy(cstr, tooltip.str().c_str());
 
 	if (for_input) {
 		input_button.set_text (label.str());
+		set_tooltip (&input_button, cstr);
 	} else {
 		output_button.set_text (label.str());
+		set_tooltip (&output_button, cstr);
 	}
+
+	delete [] cstr;
 }
 
 void
 MixerStrip::update_input_display ()
 {
-	update_io_button (_route, _width, true);
+	update_io_button (true);
 	panners.setup_pan ();
 
 	if (has_audio_outputs ()) {
@@ -1511,7 +1515,7 @@ MixerStrip::update_input_display ()
 void
 MixerStrip::update_output_display ()
 {
-	update_io_button (_route, _width, false);
+	update_io_button (false);
 	gpm.setup_meters ();
 	panners.setup_pan ();
 
@@ -1723,11 +1727,28 @@ MixerStrip::build_route_ops_menu ()
 		i->signal_activate().connect (sigc::hide_return (sigc::bind (sigc::mem_fun (*_route, &Route::set_strict_io), !_route->strict_io())));
 	}
 
+	if (is_track()) {
+		items.push_back (SeparatorElem());
+
+		Gtk::Menu* dio_menu = new Menu;
+		MenuList& dio_items = dio_menu->items();
+		dio_items.push_back (MenuElem (_("Record Pre-Fader"), sigc::bind (sigc::mem_fun (*this, &RouteUI::set_disk_io_point), DiskIOPreFader)));
+		dio_items.push_back (MenuElem (_("Record Post-Fader"), sigc::bind (sigc::mem_fun (*this, &RouteUI::set_disk_io_point), DiskIOPostFader)));
+		dio_items.push_back (MenuElem (_("Custom Record+Playback Positions"), sigc::bind (sigc::mem_fun (*this, &RouteUI::set_disk_io_point), DiskIOCustom)));
+
+		items.push_back (MenuElem (_("Disk I/O..."), *dio_menu));
+	}
+
 	_plugin_insert_cnt = 0;
 	_route->foreach_processor (sigc::mem_fun (*this, &MixerStrip::help_count_plugins));
 	if (_plugin_insert_cnt > 0) {
 		items.push_back (SeparatorElem());
 		items.push_back (MenuElem (_("Pin Connections..."), sigc::mem_fun (*this, &RouteUI::manage_pins)));
+	}
+
+	if (boost::dynamic_pointer_cast<MidiTrack>(_route) || _route->the_instrument ()) {
+		items.push_back (MenuElem (_("Patch Selector..."),
+					sigc::mem_fun(*this, &RouteUI::select_midi_patch)));
 	}
 
 	if (_route->the_instrument () && _route->the_instrument ()->output_streams().n_audio() > 2) {
@@ -1847,7 +1868,7 @@ MixerStrip::name_changed ()
 			break;
 	}
 
-	set_tooltip (name_button, _route->name());
+	set_tooltip (name_button, Gtkmm2ext::markup_escape_text(_route->name()));
 
 	if (_session->config.get_track_name_number()) {
 		const int64_t track_number = _route->track_number ();
@@ -2152,6 +2173,11 @@ MixerStrip::drop_send ()
 	monitor_input_button->set_sensitive (true);
 	monitor_disk_button->set_sensitive (true);
 	_comment_button.set_sensitive (true);
+	trim_control.set_sensitive (true);
+	if (midi_input_enable_button) {
+		midi_input_enable_button->set_sensitive (true);
+	}
+	control_slave_ui.set_sensitive (true);
 	RouteUI::check_rec_enable_sensitivity ();
 	set_button_names (); // update solo button visual state
 }
@@ -2200,6 +2226,11 @@ MixerStrip::show_send (boost::shared_ptr<Send> send)
 	monitor_input_button->set_sensitive (false);
 	monitor_disk_button->set_sensitive (false);
 	_comment_button.set_sensitive (false);
+	trim_control.set_sensitive (false);
+	if (midi_input_enable_button) {
+		midi_input_enable_button->set_sensitive (false);
+	}
+	control_slave_ui.set_sensitive (false);
 
 	if (boost::dynamic_pointer_cast<InternalSend>(send)) {
 		output_button.set_sensitive (false);
@@ -2367,6 +2398,7 @@ MixerStrip::parameter_changed (string p)
 		_visibility.set_state (UIConfiguration::instance().get_mixer_strip_visibility ());
 	} else if (p == "track-name-number") {
 		name_changed ();
+		update_track_number_visibility();
 	} else if (p == "use-monitor-bus") {
 		if (monitor_section_button) {
 			if (mute_button->get_parent()) {
@@ -2385,8 +2417,6 @@ MixerStrip::parameter_changed (string p)
 				mute_button->show();
 			}
 		}
-	} else if (p == "track-name-number") {
-		update_track_number_visibility();
 	}
 }
 

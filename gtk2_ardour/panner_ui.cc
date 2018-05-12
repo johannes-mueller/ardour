@@ -154,6 +154,9 @@ PannerUI::build_astate_menu ()
 	pan_astate_menu->items().push_back (MenuElem (_("Touch"), sigc::bind (
 			sigc::mem_fun (_panner.get(), &Panner::set_automation_state),
 			(AutoState) Touch)));
+	pan_astate_menu->items().push_back (MenuElem (_("Latch"), sigc::bind (
+			sigc::mem_fun (_panner.get(), &Panner::set_automation_state),
+			(AutoState) Latch)));
 
 }
 
@@ -305,7 +308,7 @@ PannerUI::setup_pan ()
 		twod_panner->set_size_request (-1, rintf(61.f * scale));
 		twod_panner->set_send_drawing_mode (_send_mode);
 
-		/* and finally, add it to the panner frame */
+		/* and finally, add it to the panner sample */
 
 		pan_vbox.pack_start (*twod_panner, false, false);
 	}
@@ -342,7 +345,7 @@ PannerUI::start_touch (boost::weak_ptr<AutomationControl> wac)
 	if (!ac) {
 		return;
 	}
-	ac->start_touch (ac->session().transport_frame());
+	ac->start_touch (ac->session().transport_sample());
 }
 
 void
@@ -352,7 +355,7 @@ PannerUI::stop_touch (boost::weak_ptr<AutomationControl> wac)
 	if (!ac) {
 		return;
 	}
-	ac->stop_touch (ac->session().transport_frame());
+	ac->stop_touch (ac->session().transport_sample());
 }
 
 bool
@@ -532,14 +535,6 @@ PannerUI::pan_automation_state_changed ()
 	}
 
 	update_pan_sensitive ();
-
-	/* start watching automation so that things move */
-
-	pan_watching.disconnect();
-
-	if (x) {
-		pan_watching = Timers::rapid_connect (sigc::mem_fun (*this, &PannerUI::effective_pan_display));
-	}
 }
 
 string
@@ -568,6 +563,9 @@ PannerUI::_astate_string (AutoState state, bool shrt)
 		break;
 	case Touch:
 		sstr = (shrt ? "T" : S_("Touch|T"));
+		break;
+	case Latch:
+		sstr = (shrt ? "L" : S_("Latch|L"));
 		break;
 	case Write:
 		sstr = (shrt ? "W" : S_("Write|W"));

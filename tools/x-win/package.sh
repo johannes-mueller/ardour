@@ -19,7 +19,7 @@ test -f gtk2_ardour/wscript || exit 1
 
 : ${HARRISONCHANNELSTRIP=harrison_channelstrip}
 : ${HARRISONLV2=harrison_lv2s-n}
-: ${HARRISONDSPURL=http://www.harrisonconsoles.com/plugins/releases/public}
+: ${HARRISONDSPURL=https://www.harrisonconsoles.com/plugins/releases/public}
 
 # see also wscript, video_tool_paths.cc, bundle_env_mingw.cc
 # registry keys based on this are used there
@@ -135,7 +135,7 @@ cp build/libs/gtkmm2ext/gtkmm2ext-*.dll $DESTDIR/bin/
 cp build/libs/midi++2/midipp-*.dll $DESTDIR/bin/
 cp build/libs/evoral/evoral-*.dll $DESTDIR/bin/
 cp build/libs/ardour/ardour-*.dll $DESTDIR/bin/
-cp build/libs/timecode/timecode.dll $DESTDIR/bin/
+cp build/libs/temporal/temporal-*.dll $DESTDIR/bin/
 cp build/libs/canvas/canvas-*.dll $DESTDIR/bin/
 cp build/libs/widgets/widgets-*.dll $DESTDIR/bin/
 cp build/libs/waveview/waveview-*.dll $DESTDIR/bin/

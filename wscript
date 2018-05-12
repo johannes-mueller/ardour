@@ -135,7 +135,7 @@ clang_dict['sse'] = ''
 clang_dict['fpmath-sse'] = ''
 clang_dict['xmmintrinsics'] = ''
 clang_dict['silence-unused-arguments'] = '-Qunused-arguments'
-clang_dict['extra-cxx-warnings'] = [ '-Woverloaded-virtual', '-Wno-mismatched-tags', '-Wno-cast-align', '-Wno-unused-local-typedefs' ]
+clang_dict['extra-cxx-warnings'] = [ '-Woverloaded-virtual', '-Wno-mismatched-tags', '-Wno-cast-align', '-Wno-unused-local-typedefs', '-Wunneeded-internal-declaration' ]
 clang_dict['cxx-strict'] = [ '-ansi', '-Wnon-virtual-dtor', '-Woverloaded-virtual', '-fstrict-overflow' ]
 clang_dict['strict'] = ['-Wall', '-Wcast-align', '-Wextra', '-Wwrite-strings' ]
 clang_dict['generic-x86'] = [ '-arch', 'i386' ]
@@ -157,7 +157,7 @@ def fetch_tarball_revision ():
     if not os.path.exists ('libs/ardour/revision.cc'):
         print ('This tarball was not created correctly - it is missing libs/ardour/revision.cc')
         sys.exit (1)
-    with open('libs/ardour/revision.cc') as f:
+    with open('libs/ardour/revision.cc', 'rb') as f:
         content = f.readlines()
         remove_punctuation_map = dict((ord(char), None) for char in '";')
         return content[1].decode('utf-8').strip().split(' ')[7].translate (remove_punctuation_map)
@@ -182,12 +182,29 @@ else:
     MICRO = '0'
 
 V = MAJOR + '.' + MINOR + '.' + MICRO
-# Ensure that these are not unicode, which
-# can cause odd problems elsewhere. Note that
-# in python3, encode and decode do not return
-# strings, so we have to force the type.
-VERSION = V.encode ('ascii', 'ignore').decode ("utf-8")
-PROGRAM_VERSION = MAJOR.encode ('ascii', 'ignore').decode ("utf-8")
+
+def sanitize(s):
+    # round-trip to remove anything in the string that is not encodable in
+    # ASCII, yet still keep a real (utf8-encoded internally) string.
+    s = s.encode ('ascii', 'ignore').decode ("utf-8")
+    # In Python3, bytes is the class of binary content and encode() returns
+    # bytes to transform a string according to a text encoding; str is the
+    # class of normal strings (utf8-encoded internally) and decode() returns
+    # that type.
+    # Python 2 did not initially cater for encoding problems and can use str
+    # for both binary content and for (decoded) strings. The Unicode type was
+    # added to correspond to Python 3 str, and the Python 2 str type should
+    # only correspond to bytes. Alas, almost everything in the Python 2
+    # ecosystem has been written with str in mind and doesn't handle Unicode
+    # objects correctly. If Python 2 is in use, s will be a Unicode object and
+    # to avoid strange problems later we convert back to str, but in utf-8
+    # nonetheless.
+    if not isinstance(s, str):
+        s = s.encode("utf-8")
+    return s
+VERSION = sanitize(V)
+PROGRAM_VERSION = sanitize(MAJOR)
+del sanitize
 
 if len (sys.argv) > 1 and sys.argv[1] == 'dist':
         if not 'APPNAME' in os.environ:
@@ -208,6 +225,7 @@ children = [
         'libs/ptformat',
         'libs/qm-dsp',
         'libs/vamp-plugins',
+        'libs/zita-resampler',
         # core ardour libraries
         'libs/pbd',
         'libs/midi++2',
@@ -215,7 +233,7 @@ children = [
         'libs/surfaces',
         'libs/panners',
         'libs/backends',
-        'libs/timecode',
+        'libs/temporal',
         'libs/ardour',
         'libs/gtkmm2ext',
         'libs/audiographer',
@@ -234,6 +252,7 @@ children = [
         'mcp',
         'osc',
         'patchfiles',
+        'plugin_metadata',
         'scripts',
         'headless',
         'session_utils',
@@ -289,7 +308,7 @@ def create_stored_revision():
 def get_depstack_rev(depstack_root):
     try:
         with open(depstack_root + '/../.vers', 'r') as f:
-            return f.readline()
+            return f.readline().decode('utf-8').strip()[:7]
     except IOError:
         return '-unknown-';
 
@@ -367,6 +386,8 @@ int main() { return 0; }''',
             conf.env['build_host'] = 'el_capitan'
         elif re.search ("^16[.]", version) != None:
             conf.env['build_host'] = 'sierra'
+        elif re.search ("^17[.]", version) != None:
+            conf.env['build_host'] = 'high_sierra'
         else:
             conf.env['build_host'] = 'irrelevant'
 
@@ -392,8 +413,10 @@ int main() { return 0; }''',
                 conf.env['build_target'] = 'yosemite'
             elif re.search ("^15[.]", version) != None:
                 conf.env['build_target'] = 'el_capitan'
-            else:
+            elif re.search ("^16[.]", version) != None:
                 conf.env['build_target'] = 'sierra'
+            else:
+                conf.env['build_target'] = 'high_sierra'
         else:
             match = re.search(
                     "(?P<cpu>i[0-6]86|x86_64|powerpc|ppc|ppc64|arm|s390x?)",
@@ -414,11 +437,11 @@ int main() { return 0; }''',
         #
         compiler_flags.append ('-U__STRICT_ANSI__')
 
-    if opt.use_libcpp or conf.env['build_host'] in [ 'el_capitan', 'sierra' ]:
+    if opt.use_libcpp or conf.env['build_host'] in [ 'el_capitan', 'sierra', 'high_sierra' ]:
        cxx_flags.append('--stdlib=libc++')
        linker_flags.append('--stdlib=libc++')
 
-    if conf.options.cxx11 or conf.env['build_host'] in [ 'mavericks', 'yosemite', 'el_capitan', 'sierra' ]:
+    if conf.options.cxx11 or conf.env['build_host'] in [ 'mavericks', 'yosemite', 'el_capitan', 'sierra', 'high_sierra' ]:
         conf.check_cxx(cxxflags=["-std=c++11"])
         cxx_flags.append('-std=c++11')
         if platform == "darwin":
@@ -426,7 +449,7 @@ int main() { return 0; }''',
             # from requiring a full path to requiring just the header name.
             cxx_flags.append('-DCARBON_FLAT_HEADERS')
 
-            if not opt.use_libcpp and not conf.env['build_host'] in [ 'el_capitan', 'sierra' ]:
+            if not opt.use_libcpp and not conf.env['build_host'] in [ 'el_capitan', 'sierra', 'high_sierra' ]:
                 cxx_flags.append('--stdlib=libstdc++')
                 linker_flags.append('--stdlib=libstdc++')
             # Prevents visibility issues in standard headers
@@ -435,7 +458,7 @@ int main() { return 0; }''',
             cxx_flags.append('-DBOOST_NO_AUTO_PTR')
 
 
-    if (is_clang and platform == "darwin") or conf.env['build_host'] in [ 'mavericks', 'yosemite', 'el_capitan', 'sierra' ]:
+    if (is_clang and platform == "darwin") or conf.env['build_host'] in [ 'mavericks', 'yosemite', 'el_capitan', 'sierra', 'high_sierra' ]:
         # Silence warnings about the non-existing osx clang compiler flags
         # -compatibility_version and -current_version.  These are Waf
         # generated and not needed with clang
@@ -551,7 +574,7 @@ int main() { return 0; }''',
                 ("-DMAC_OS_X_VERSION_MAX_ALLOWED=1090",
                  "-mmacosx-version-min=10.8"))
 
-    elif conf.env['build_target'] in ['el_capitan', 'sierra' ]:
+    elif conf.env['build_target'] in ['el_capitan', 'sierra', 'high_sierra' ]:
         compiler_flags.extend(
                 ("-DMAC_OS_X_VERSION_MAX_ALLOWED=1090",
                  "-mmacosx-version-min=10.9"))
@@ -766,6 +789,8 @@ def options(opt):
                     help="Build a single executable for each unit test")
     #opt.add_option('--tranzport', action='store_true', default=False, dest='tranzport',
     # help='Compile with support for Frontier Designs Tranzport (if libusb is available)')
+    opt.add_option('--maschine', action='store_true', default=False, dest='maschine',
+                    help='Compile with support for NI-Maschine')
     opt.add_option('--generic', action='store_true', default=False, dest='generic',
                     help='Compile with -arch i386 (OS X ONLY)')
     opt.add_option('--ppc', action='store_true', default=False, dest='ppc',
@@ -854,7 +879,9 @@ def configure(conf):
     pkg_config_path = os.getenv('PKG_CONFIG_PATH')
     user_gtk_root = os.path.expanduser (Options.options.depstack_root + '/gtk/inst')
 
-    if pkg_config_path is not None and pkg_config_path.find (user_gtk_root) >= 0:
+    if os.getenv('DEPSTACK_ROOT') is not None and os.path.exists (os.getenv('DEPSTACK_ROOT') + '/lib'):
+        conf.env['DEPSTACK_REV'] = get_depstack_rev (os.getenv('DEPSTACK_ROOT') + '/lib')
+    elif pkg_config_path is not None and pkg_config_path.find (user_gtk_root) >= 0:
         # told to search user_gtk_root
         prefinclude = ''.join ([ '-I', user_gtk_root + '/include'])
         preflib = ''.join ([ '-L', user_gtk_root + '/lib'])
@@ -862,7 +889,7 @@ def configure(conf):
         conf.env.append_value('CXXFLAGS',  [prefinclude ])
         conf.env.append_value('LINKFLAGS', [ preflib ])
         autowaf.display_msg(conf, 'Will build against private GTK dependency stack in ' + user_gtk_root, 'yes')
-        conf.env['DEPSTACK_REV'] = get_depstack_rev (Options.options.depstack_root)
+        conf.env['DEPSTACK_REV'] = get_depstack_rev (user_gtk_root)
     else:
         autowaf.display_msg(conf, 'Will build against private GTK dependency stack', 'no')
         conf.env['DEPSTACK_REV'] = '-system-'
@@ -997,12 +1024,13 @@ def configure(conf):
                 conf.check_cc(function_name='dlopen', header_name='dlfcn.h', uselib_store='DL')
             else:
                 conf.check_cc(function_name='dlopen', header_name='dlfcn.h', lib='dl', uselib_store='DL')
-        conf.check_cxx(fragment = "#include <boost/version.hpp>\nint main(void) { return (BOOST_VERSION >= 103900 ? 0 : 1); }\n",
-                  execute = "1",
-                  mandatory = True,
-                  msg = 'Checking for boost library >= 1.39',
-                  okmsg = 'ok',
-                  errmsg = 'too old\nPlease install boost version 1.39 or higher.')
+
+    conf.check_cxx(fragment = "#include <boost/version.hpp>\n#if !defined (BOOST_VERSION) || BOOST_VERSION < 103900\n#error boost >= 1.39 is not available\n#endif\nint main(void) { return 0; }\n",
+              execute = False,
+              mandatory = True,
+              msg = 'Checking for boost library >= 1.39',
+              okmsg = 'ok',
+              errmsg = 'too old\nPlease install boost version 1.39 or higher.')
 
     if re.search ("linux", sys.platform) != None and Options.options.dist_target != 'mingw':
         autowaf.check_pkg(conf, 'alsa', uselib_store='ALSA')
@@ -1262,6 +1290,7 @@ const char* const ardour_config_info = "\\n\\
     write_config_text('LV2 extensions',        conf.is_defined('LV2_EXTENDED'))
     write_config_text('LXVST support',         conf.is_defined('LXVST_SUPPORT'))
     write_config_text('Mac VST support',       conf.is_defined('MACVST_SUPPORT'))
+    write_config_text('NI-Maschine',           opts.maschine)
     write_config_text('OGG',                   conf.is_defined('HAVE_OGG'))
     write_config_text('Phone home',            conf.is_defined('PHONE_HOME'))
     write_config_text('Process thread timing', conf.is_defined('PT_TIMING'))
@@ -1284,7 +1313,7 @@ const char* const ardour_config_info = "\\n\\
     write_config_text('Dummy backend',         conf.env['BUILD_DUMMYBACKEND'])
     write_config_text('JACK Backend',          conf.env['BUILD_JACKBACKEND'])
     config_text.write("\\n\\\n")
-    write_config_text('Builstack', conf.env['DEPSTACK_REV'])
+    write_config_text('Buildstack', conf.env['DEPSTACK_REV'])
     write_config_text('Mac i386 Architecture', opts.generic)
     write_config_text('Mac ppc Architecture',  opts.ppc)
     config_text.write("\\n\\\n")
@@ -1308,7 +1337,7 @@ def build(bld):
         bld.path.find_dir ('libs/libltc/ltc')
     bld.path.find_dir ('libs/evoral/evoral')
     bld.path.find_dir ('libs/surfaces/control_protocol/control_protocol')
-    bld.path.find_dir ('libs/timecode/timecode')
+    bld.path.find_dir ('libs/temporal/temporal')
     bld.path.find_dir ('libs/gtkmm2ext/gtkmm2ext')
     bld.path.find_dir ('libs/ardour/ardour')
     bld.path.find_dir ('libs/pbd/pbd')
@@ -1350,6 +1379,8 @@ def build(bld):
         bld.recurse('tools/bb')
             
     bld.install_files (bld.env['CONFDIR'], 'system_config')
+
+    bld.install_files (os.path.join (bld.env['DATADIR'], 'templates'), bld.path.ant_glob ('templates/**'), cwd=bld.path.find_dir ('templates'), relative_trick=True)
 
     if bld.env['RUN_TESTS']:
         bld.add_post_fun(test)

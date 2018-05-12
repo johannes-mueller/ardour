@@ -45,7 +45,9 @@
 #include "pbd/windows_special_dirs.h"
 #endif
 
+#ifdef WAF_BUILD
 #include "libardour-config.h"
+#endif
 
 #include "ardour/audio_buffer.h"
 #include "ardour/audioengine.h"
@@ -230,18 +232,35 @@ work_respond(LV2_Worker_Respond_Handle handle,
 
 #ifdef LV2_EXTENDED
 /* inline display extension */
-static void
-queue_draw (LV2_Inline_Display_Handle handle)
+void
+LV2Plugin::queue_draw (LV2_Inline_Display_Handle handle)
 {
 	LV2Plugin* plugin = (LV2Plugin*)handle;
 	plugin->QueueDraw(); /* EMIT SIGNAL */
 }
 
-static void
-midnam_update (LV2_Midnam_Handle handle)
+void
+LV2Plugin::midnam_update (LV2_Midnam_Handle handle)
 {
 	LV2Plugin* plugin = (LV2Plugin*)handle;
+	plugin->_midnam_dirty = true;
 	plugin->UpdateMidnam (); /* EMIT SIGNAL */
+}
+
+void
+LV2Plugin::bankpatch_notify (LV2_BankPatch_Handle handle, uint8_t chn, uint32_t bank, uint8_t pgm)
+{
+	LV2Plugin* plugin = (LV2Plugin*)handle;
+	if (chn > 15) {
+		return;
+	}
+	plugin->seen_bankpatch = true;
+	if (pgm > 127 || bank > 16383) {
+		plugin->_bankpatch[chn] = UINT32_MAX;
+	} else {
+		plugin->_bankpatch[chn] = (bank << 7) | pgm;
+	}
+	plugin->BankPatchChange (chn); /* EMIT SIGNAL */
 }
 #endif
 
@@ -329,13 +348,14 @@ struct LV2Plugin::Impl {
 #ifdef LV2_EXTENDED
 	LV2_Inline_Display*          queue_draw;
 	LV2_Midnam*                  midnam;
+	LV2_BankPatch*               bankpatch;
 #endif
 };
 
 LV2Plugin::LV2Plugin (AudioEngine& engine,
                       Session&     session,
                       const void*  c_plugin,
-                      framecnt_t   rate)
+                      samplecnt_t   rate)
 	: Plugin (engine, session)
 	, Workee ()
 	, _impl(new Impl())
@@ -373,7 +393,7 @@ LV2Plugin::LV2Plugin (const LV2Plugin& other)
 }
 
 void
-LV2Plugin::init(const void* c_plugin, framecnt_t rate)
+LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 {
 	DEBUG_TRACE(DEBUG::LV2, "init\n");
 
@@ -389,14 +409,16 @@ LV2Plugin::init(const void* c_plugin, framecnt_t rate)
 	_bpm_control_port       = 0;
 	_freewheel_control_port = 0;
 	_latency_control_port   = 0;
-	_next_cycle_start       = std::numeric_limits<framepos_t>::max();
+	_next_cycle_start       = std::numeric_limits<samplepos_t>::max();
 	_next_cycle_speed       = 1.0;
 	_seq_size               = _engine.raw_buffer_size(DataType::MIDI);
 	_state_version          = 0;
 	_was_activated          = false;
 	_has_state_interface    = false;
 	_can_write_automation   = false;
+#ifdef LV2_EXTENDED
 	_inline_display_in_gui  = false;
+#endif
 	_max_latency            = 0;
 	_current_latency        = 0;
 	_impl->block_length     = _session.get_block_size();
@@ -422,7 +444,7 @@ LV2Plugin::init(const void* c_plugin, framecnt_t rate)
 	lilv_node_free(state_uri);
 	lilv_node_free(state_iface_uri);
 
-	_features    = (LV2_Feature**)calloc(13, sizeof(LV2_Feature*));
+	_features    = (LV2_Feature**)calloc(14, sizeof(LV2_Feature*));
 	_features[0] = &_instance_access_feature;
 	_features[1] = &_data_access_feature;
 	_features[2] = &_make_path_feature;
@@ -457,6 +479,15 @@ LV2Plugin::init(const void* c_plugin, framecnt_t rate)
 	_midnam_feature.URI  = LV2_MIDNAM__update;
 	_midnam_feature.data = _impl->midnam;
 	_features[n_features++]  = &_midnam_feature;
+
+	_impl->bankpatch = (LV2_BankPatch*)
+		malloc (sizeof(LV2_BankPatch));
+	_impl->bankpatch->handle = this;
+	_impl->bankpatch->notify = bankpatch_notify;
+
+	_bankpatch_feature.URI  = LV2_BANKPATCH__notify;
+	_bankpatch_feature.data = _impl->bankpatch;
+	_features[n_features++]  = &_bankpatch_feature;
 #endif
 
 #ifdef HAVE_LV2_1_2_0
@@ -488,6 +519,13 @@ LV2Plugin::init(const void* c_plugin, framecnt_t rate)
 	_options_feature.URI    = LV2_OPTIONS__options;
 	_options_feature.data   = _impl->options;
 	_features[n_features++] = &_options_feature;
+#endif
+
+#ifdef LV2_EXTENDED
+	seen_bankpatch = false;
+	for (uint32_t chn = 0; chn < 16; ++chn) {
+		_bankpatch[chn] = UINT32_MAX;
+	}
 #endif
 
 	LV2_State_Make_Path* make_path = (LV2_State_Make_Path*)malloc(
@@ -557,6 +595,7 @@ LV2Plugin::init(const void* c_plugin, framecnt_t rate)
 	_midname_interface = (const LV2_Midnam_Interface*)
 		extension_data (LV2_MIDNAM__interface);
 	if (_midname_interface) {
+		_midnam_dirty = true;
 		read_midnam ();
 	}
 #endif
@@ -753,7 +792,7 @@ LV2Plugin::init(const void* c_plugin, framecnt_t rate)
 			lilv_port_get_range(plugin, port, &def, NULL, NULL);
 			_defaults[i] = def ? lilv_node_as_float(def) : 0.0f;
 			if (lilv_port_has_property (plugin, port, _world.lv2_sampleRate)) {
-				_defaults[i] *= _session.frame_rate ();
+				_defaults[i] *= _session.sample_rate ();
 			}
 			lilv_node_free(def);
 
@@ -866,7 +905,7 @@ LV2Plugin::requires_fixed_sized_buffers () const
 	 */
 	if (get_info()->n_inputs.n_midi() > 0) {
 		/* we don't yet implement midi buffer offsets (for split cycles).
-		 * Also connect_and_run() also uses _session.transport_frame() directly
+		 * Also connect_and_run() also uses _session.transport_sample() directly
 		 * (for BBT) which is not offset for plugin cycle split.
 		 */
 		return true;
@@ -900,6 +939,7 @@ LV2Plugin::~LV2Plugin ()
 #ifdef LV2_EXTENDED
 	free(_impl->queue_draw);
 	free(_impl->midnam);
+	free(_impl->bankpatch);
 #endif
 
 	free(_features);
@@ -995,7 +1035,7 @@ LV2Plugin::has_midnam () {
 bool
 LV2Plugin::read_midnam () {
 	bool rv = false;
-	if (!_midname_interface) {
+	if (!_midname_interface || !_midnam_dirty) {
 		return rv;
 	}
 	char* midnam = _midname_interface->midnam ((void*)_impl->instance->lv2_handle);
@@ -1013,6 +1053,10 @@ LV2Plugin::read_midnam () {
 	}
 #endif
 	_midname_interface->free (midnam);
+	if (rv) {
+		UpdatedMidnam ();
+		_midnam_dirty = false;
+	}
 	return rv;
 }
 
@@ -1681,7 +1725,7 @@ LV2Plugin::write_from_ui(uint32_t       index,
 		if (_atom_ev_buffers && _atom_ev_buffers[0]) {
 			bufsiz =  lv2_evbuf_get_capacity(_atom_ev_buffers[0]);
 		}
-		int fact = ceilf(_session.frame_rate () / 3000.f);
+		int fact = ceilf(_session.sample_rate () / 3000.f);
 		rbs = max((size_t) bufsiz * std::max (8, fact), rbs);
 		_from_ui = new RingBuffer<uint8_t>(rbs);
 	}
@@ -1785,19 +1829,19 @@ LV2Plugin::set_property(uint32_t key, const Variant& value)
 
 	// Set up forge to write to temporary buffer on the stack
 	LV2_Atom_Forge*      forge = &_impl->ui_forge;
-	LV2_Atom_Forge_Frame frame;
+	LV2_Atom_Forge_Frame sample;
 	uint8_t              buf[PATH_MAX];  // Ought to be enough for anyone...
 
 	lv2_atom_forge_set_buffer(forge, buf, sizeof(buf));
 
 	// Serialize patch:Set message to set property
 #ifdef HAVE_LV2_1_10_0
-	lv2_atom_forge_object(forge, &frame, 0, _uri_map.urids.patch_Set);
+	lv2_atom_forge_object(forge, &sample, 0, _uri_map.urids.patch_Set);
 	lv2_atom_forge_key(forge, _uri_map.urids.patch_property);
 	lv2_atom_forge_urid(forge, key);
 	lv2_atom_forge_key(forge, _uri_map.urids.patch_value);
 #else
-	lv2_atom_forge_blank(forge, &frame, 0, _uri_map.urids.patch_Set);
+	lv2_atom_forge_blank(forge, &sample, 0, _uri_map.urids.patch_Set);
 	lv2_atom_forge_property_head(forge, _uri_map.urids.patch_property, 0);
 	lv2_atom_forge_urid(forge, key);
 	lv2_atom_forge_property_head(forge, _uri_map.urids.patch_value, 0);
@@ -1948,16 +1992,16 @@ LV2Plugin::announce_property_values()
 
 	// Set up forge to write to temporary buffer on the stack
 	LV2_Atom_Forge*      forge = &_impl->ui_forge;
-	LV2_Atom_Forge_Frame frame;
+	LV2_Atom_Forge_Frame sample;
 	uint8_t              buf[PATH_MAX];  // Ought to be enough for anyone...
 
 	lv2_atom_forge_set_buffer(forge, buf, sizeof(buf));
 
 	// Serialize patch:Get message with no subject (implicitly plugin instance)
 #ifdef HAVE_LV2_1_10_0
-	lv2_atom_forge_object(forge, &frame, 0, _uri_map.urids.patch_Get);
+	lv2_atom_forge_object(forge, &sample, 0, _uri_map.urids.patch_Get);
 #else
-	lv2_atom_forge_blank(forge, &frame, 0, _uri_map.urids.patch_Get);
+	lv2_atom_forge_blank(forge, &sample, 0, _uri_map.urids.patch_Get);
 #endif
 
 	// Write message to UI=>Plugin ring
@@ -2162,8 +2206,8 @@ LV2Plugin::get_parameter_descriptor(uint32_t which, ParameterDescriptor& desc) c
 	load_parameter_descriptor_units(_world.world, desc, portunits);
 
 	if (desc.sr_dependent) {
-		desc.lower *= _session.frame_rate ();
-		desc.upper *= _session.frame_rate ();
+		desc.lower *= _session.sample_rate ();
+		desc.upper *= _session.sample_rate ();
 	}
 
 	desc.enumeration = lilv_port_has_property(_impl->plugin, port, _world.lv2_enumeration);
@@ -2306,17 +2350,17 @@ LV2Plugin::describe_parameter(Evoral::Parameter which)
 	}
 }
 
-framecnt_t
+samplecnt_t
 LV2Plugin::max_latency () const
 {
 	return _max_latency;
 }
 
-framecnt_t
+samplecnt_t
 LV2Plugin::signal_latency() const
 {
 	if (_latency_control_port) {
-		return (framecnt_t)floor(*_latency_control_port);
+		return (samplecnt_t)floor(*_latency_control_port);
 	} else {
 		return 0;
 	}
@@ -2458,17 +2502,17 @@ write_position(LV2_Atom_Forge*     forge,
                Timecode::BBT_Time& bbt,
                double              speed,
                double              bpm,
-               framepos_t          position,
-               framecnt_t          offset)
+               samplepos_t          position,
+               samplecnt_t          offset)
 {
 	const URIMap::URIDs& urids = URIMap::instance().urids;
 
 	uint8_t pos_buf[256];
 	lv2_atom_forge_set_buffer(forge, pos_buf, sizeof(pos_buf));
-	LV2_Atom_Forge_Frame frame;
+	LV2_Atom_Forge_Frame sample;
 #ifdef HAVE_LV2_1_10_0
-	lv2_atom_forge_object(forge, &frame, 0, urids.time_Position);
-	lv2_atom_forge_key(forge, urids.time_frame);
+	lv2_atom_forge_object(forge, &sample, 0, urids.time_Position);
+	lv2_atom_forge_key(forge, urids.time_sample);
 	lv2_atom_forge_long(forge, position);
 	lv2_atom_forge_key(forge, urids.time_speed);
 	lv2_atom_forge_float(forge, speed);
@@ -2484,8 +2528,8 @@ write_position(LV2_Atom_Forge*     forge,
 	lv2_atom_forge_key(forge, urids.time_beatsPerMinute);
 	lv2_atom_forge_float(forge, bpm);
 #else
-	lv2_atom_forge_blank(forge, &frame, 1, urids.time_Position);
-	lv2_atom_forge_property_head(forge, urids.time_frame, 0);
+	lv2_atom_forge_blank(forge, &sample, 1, urids.time_Position);
+	lv2_atom_forge_property_head(forge, urids.time_sample, 0);
 	lv2_atom_forge_long(forge, position);
 	lv2_atom_forge_property_head(forge, urids.time_speed, 0);
 	lv2_atom_forge_float(forge, speed);
@@ -2510,9 +2554,9 @@ write_position(LV2_Atom_Forge*     forge,
 
 int
 LV2Plugin::connect_and_run(BufferSet& bufs,
-		framepos_t start, framepos_t end, double speed,
+		samplepos_t start, samplepos_t end, double speed,
 		ChanMapping in_map, ChanMapping out_map,
-		pframes_t nframes, framecnt_t offset)
+		pframes_t nframes, samplecnt_t offset)
 {
 	DEBUG_TRACE(DEBUG::LV2, string_compose("%1 run %2 offset %3\n", name(), nframes, offset));
 	Plugin::connect_and_run(bufs, start, end, speed, in_map, out_map, nframes, offset);
@@ -2528,7 +2572,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 	}
 
 	if (_bpm_control_port) {
-		*_bpm_control_port = tmap.tempo_at_frame (start).note_types_per_minute();
+		*_bpm_control_port = tmap.tempo_at_sample (start).note_types_per_minute();
 	}
 
 #ifdef LV2_EXTENDED
@@ -2599,8 +2643,8 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 
 			if (valid && (flags & PORT_INPUT)) {
 				if ((flags & PORT_POSITION)) {
-					Timecode::BBT_Time bbt (tmap.bbt_at_frame (start));
-					double bpm = tmap.tempo_at_frame (start).note_types_per_minute();
+					Timecode::BBT_Time bbt (tmap.bbt_at_sample (start));
+					double bpm = tmap.tempo_at_sample (start).note_types_per_minute();
 					double beatpos = (bbt.bars - 1) * tmetric.meter().divisions_per_bar()
 					               + (bbt.beats - 1)
 					               + (bbt.ticks / Timecode::BBT_Time::ticks_per_beat);
@@ -2625,14 +2669,14 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 
 				// Now merge MIDI and any transport events into the buffer
 				const uint32_t     type = _uri_map.urids.midi_MidiEvent;
-				const framepos_t   tend = end;
+				const samplepos_t   tend = end;
 				++metric_i;
 				while (m != m_end || (metric_i != tmap.metrics_end() &&
-				                      (*metric_i)->frame() < tend)) {
+				                      (*metric_i)->sample() < tend)) {
 					MetricSection* metric = (metric_i != tmap.metrics_end())
 						? *metric_i : NULL;
-					if (m != m_end && (!metric || metric->frame() > (*m).time())) {
-						const Evoral::Event<framepos_t> ev(*m, false);
+					if (m != m_end && (!metric || metric->sample() > (*m).time())) {
+						const Evoral::Event<samplepos_t> ev(*m, false);
 						if (ev.time() < nframes) {
 							LV2_Evbuf_Iterator eend = lv2_evbuf_end(_ev_buffers[port_index]);
 							lv2_evbuf_write(&eend, ev.time(), 0, type, ev.size(), ev.buffer());
@@ -2641,12 +2685,12 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 					} else {
 						tmetric.set_metric(metric);
 						Timecode::BBT_Time bbt;
-						bbt = tmap.bbt_at_frame (metric->frame());
-						double bpm = tmap.tempo_at_frame (start/*XXX*/).note_types_per_minute();
+						bbt = tmap.bbt_at_sample (metric->sample());
+						double bpm = tmap.tempo_at_sample (start/*XXX*/).note_types_per_minute();
 						write_position(&_impl->forge, _ev_buffers[port_index],
 						               tmetric, bbt, speed, bpm,
-						               metric->frame(),
-						               metric->frame() - start);
+						               metric->sample(),
+						               metric->sample() - start);
 						++metric_i;
 					}
 				}
@@ -2738,9 +2782,9 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 			for (LV2_Evbuf_Iterator i = lv2_evbuf_begin(buf);
 			     lv2_evbuf_is_valid(i);
 			     i = lv2_evbuf_next(i)) {
-				uint32_t frames, subframes, type, size;
+				uint32_t samples, subframes, type, size;
 				uint8_t* data;
-				lv2_evbuf_get(i, &frames, &subframes, &type, &size, &data);
+				lv2_evbuf_get(i, &samples, &subframes, &type, &size, &data);
 
 #ifdef LV2_EXTENDED
 				// Intercept Automation Write Events
@@ -2762,13 +2806,13 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 								const float v = ((const LV2_Atom_Float*)value)->body;
 								// -> add automation event..
 								DEBUG_TRACE(DEBUG::LV2Automate,
-										string_compose ("Event p: %1 t: %2 v: %3\n", p, frames, v));
+										string_compose ("Event p: %1 t: %2 v: %3\n", p, samples, v));
 								AutomationCtrlPtr c = get_automation_control (p);
 								if (c &&
 								     (c->ac->automation_state() == Touch || c->ac->automation_state() == Write)
 								   ) {
-									framepos_t when = std::max ((framepos_t) 0, start + frames - _current_latency);
-									assert (start + frames - _current_latency >= 0);
+									samplepos_t when = std::max ((samplepos_t) 0, start + samples - _current_latency);
+									assert (start + samples - _current_latency >= 0);
 									if (c->guard) {
 										c->guard = false;
 										c->ac->list()->add (when, v, true, true);
@@ -2830,7 +2874,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 								AutomationCtrlPtr c = get_automation_control (p);
 								DEBUG_TRACE(DEBUG::LV2Automate, string_compose ("Start Touch p: %1\n", p));
 								if (c) {
-									c->ac->start_touch (std::max ((framepos_t)0, start - _current_latency));
+									c->ac->start_touch (std::max ((samplepos_t)0, start - _current_latency));
 									c->guard = true;
 								}
 							}
@@ -2845,7 +2889,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 								AutomationCtrlPtr c = get_automation_control (p);
 								DEBUG_TRACE(DEBUG::LV2Automate, string_compose ("End Touch p: %1\n", p));
 								if (c) {
-									c->ac->stop_touch (std::max ((framepos_t)0, start - _current_latency));
+									c->ac->stop_touch (std::max ((samplepos_t)0, start - _current_latency));
 								}
 							}
 						}
@@ -2915,17 +2959,17 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 		 * so it needs to be realative to that.
 		 */
 		TempoMetric t = tmap.metric_at(start);
-		_current_bpm = tmap.tempo_at_frame (start).note_types_per_minute();
-		Timecode::BBT_Time bbt (tmap.bbt_at_frame (start));
+		_current_bpm = tmap.tempo_at_sample (start).note_types_per_minute();
+		Timecode::BBT_Time bbt (tmap.bbt_at_sample (start));
 		double beatpos = (bbt.bars - 1) * t.meter().divisions_per_bar()
 		               + (bbt.beats - 1)
 		               + (bbt.ticks / Timecode::BBT_Time::ticks_per_beat);
 		beatpos *= tmetric.meter().note_divisor() / 4.0;
-		_next_cycle_beat = beatpos + nframes * speed * _current_bpm / (60.f * _session.frame_rate());
+		_next_cycle_beat = beatpos + nframes * speed * _current_bpm / (60.f * _session.sample_rate());
 	}
 
 	if (_latency_control_port) {
-		framecnt_t new_latency = signal_latency ();
+		samplecnt_t new_latency = signal_latency ();
 		_current_latency = new_latency;
 	}
 	return 0;
@@ -3080,7 +3124,7 @@ LV2Plugin::latency_compute_run()
 	uint32_t out_index  = 0;
 
 	// this is done in the main thread. non realtime.
-	const framecnt_t bufsize = _engine.samples_per_cycle();
+	const samplecnt_t bufsize = _engine.samples_per_cycle();
 	float            *buffer = (float*) malloc(_engine.samples_per_cycle() * sizeof(float));
 
 	memset(buffer, 0, sizeof(float) * bufsize);
@@ -3316,7 +3360,7 @@ LV2PluginInfo::load(Session& session)
 		if (!uri) { throw failed_constructor(); }
 		const LilvPlugin* lp = lilv_plugins_get_by_uri(plugins, uri);
 		if (!lp) { throw failed_constructor(); }
-		plugin.reset(new LV2Plugin(session.engine(), session, lp, session.frame_rate()));
+		plugin.reset(new LV2Plugin(session.engine(), session, lp, session.sample_rate()));
 		lilv_node_free(uri);
 		plugin->set_info(PluginInfoPtr(shared_from_this ()));
 		return plugin;
@@ -3367,31 +3411,6 @@ LV2PluginInfo::get_presets (bool /*user_only*/) const
 	lilv_node_free(lv2_appliesTo);
 #endif
 	return p;
-}
-
-bool
-LV2PluginInfo::in_category (const std::string &c) const
-{
-	// TODO use untranslated lilv_plugin_get_class()
-	// match gtk2_ardour/plugin_selector.cc
-	return category == c;
-}
-
-bool
-LV2PluginInfo::is_instrument () const
-{
-	if (category == "Instrument") {
-		return true;
-	}
-#if 1
-	/* until we make sure that category remains untranslated in the lv2.ttl spec
-	 * and until most instruments also classify themselves as such, there's a 2nd check:
-	 */
-	if (n_inputs.n_midi() > 0 && n_inputs.n_audio() == 0 && n_outputs.n_audio() > 0) {
-		return true;
-	}
-#endif
-	return false;
 }
 
 PluginInfoList*

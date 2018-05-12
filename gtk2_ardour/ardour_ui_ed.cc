@@ -466,6 +466,10 @@ ARDOUR_UI::install_actions ()
 	act = global_actions.register_action (transport_actions, X_("PlayPreroll"), _("Play w/Preroll"), sigc::mem_fun(*this, &ARDOUR_UI::transport_play_preroll));
 	ActionManager::session_sensitive_actions.push_back (act);
 	ActionManager::transport_sensitive_actions.push_back (act);
+	act = global_actions.register_action (transport_actions, X_("solo-selection"), _("Solo Selection"), sigc::bind (sigc::mem_fun(*editor, &PublicEditor::play_solo_selection), true));
+	ActionManager::session_sensitive_actions.push_back (act);
+	ActionManager::transport_sensitive_actions.push_back (act);
+
 
 	act = global_actions.register_action (transport_actions, X_("RecordPreroll"), _("Record w/Preroll"), sigc::mem_fun(*this, &ARDOUR_UI::transport_rec_preroll));
 	ActionManager::session_sensitive_actions.push_back (act);
@@ -568,7 +572,9 @@ ARDOUR_UI::install_actions ()
 	ActionManager::session_sensitive_actions.push_back (act);
 	act = global_actions.register_action (transport_actions, X_("primary-clock-minsec"), _("Minutes & Seconds"), sigc::bind (sigc::mem_fun(primary_clock, &AudioClock::set_mode), AudioClock::MinSec, false));
 	ActionManager::session_sensitive_actions.push_back (act);
-	act = global_actions.register_action (transport_actions, X_("primary-clock-samples"), _("Samples"), sigc::bind (sigc::mem_fun(primary_clock, &AudioClock::set_mode), AudioClock::Frames, false));
+	act = global_actions.register_action (transport_actions, X_("primary-clock-seconds"), _("Seconds"), sigc::bind (sigc::mem_fun(primary_clock, &AudioClock::set_mode), AudioClock::Seconds, false));
+	ActionManager::session_sensitive_actions.push_back (act);
+	act = global_actions.register_action (transport_actions, X_("primary-clock-samples"), _("Samples"), sigc::bind (sigc::mem_fun(primary_clock, &AudioClock::set_mode), AudioClock::Samples, false));
 	ActionManager::session_sensitive_actions.push_back (act);
 
 	act = global_actions.register_action (transport_actions, X_("secondary-clock-timecode"), _("Timecode"), sigc::bind (sigc::mem_fun(secondary_clock, &AudioClock::set_mode), AudioClock::Timecode, false));
@@ -577,7 +583,9 @@ ARDOUR_UI::install_actions ()
 	ActionManager::session_sensitive_actions.push_back (act);
 	act = global_actions.register_action (transport_actions, X_("secondary-clock-minsec"), _("Minutes & Seconds"), sigc::bind (sigc::mem_fun(secondary_clock, &AudioClock::set_mode), AudioClock::MinSec, false));
 	ActionManager::session_sensitive_actions.push_back (act);
-	act = global_actions.register_action (transport_actions, X_("secondary-clock-samples"), _("Samples"), sigc::bind (sigc::mem_fun(secondary_clock, &AudioClock::set_mode), AudioClock::Frames, false));
+	act = global_actions.register_action (transport_actions, X_("secondary-clock-seconds"), _("Seconds"), sigc::bind (sigc::mem_fun(secondary_clock, &AudioClock::set_mode), AudioClock::Seconds, false));
+	ActionManager::session_sensitive_actions.push_back (act);
+	act = global_actions.register_action (transport_actions, X_("secondary-clock-samples"), _("Samples"), sigc::bind (sigc::mem_fun(secondary_clock, &AudioClock::set_mode), AudioClock::Samples, false));
 	ActionManager::session_sensitive_actions.push_back (act);
 
 	act = global_actions.register_toggle_action (transport_actions, X_("SessionMonitorIn"), _("All Input"), sigc::mem_fun(*this, &ARDOUR_UI::toggle_session_monitoring_in));
@@ -649,7 +657,9 @@ ARDOUR_UI::install_actions ()
 	/* MIDI */
 
 	Glib::RefPtr<ActionGroup> midi_actions = global_actions.create_action_group (X_("MIDI"));
-	global_actions.register_action (midi_actions, X_("panic"), _("Panic (Send MIDI all-notes-off)"), sigc::mem_fun(*this, &ARDOUR_UI::midi_panic));
+	act = global_actions.register_action (midi_actions, X_("panic"), _("Panic (Send MIDI all-notes-off)"), sigc::mem_fun(*this, &ARDOUR_UI::midi_panic));
+	ActionManager::session_sensitive_actions.push_back (act);
+	ActionManager::transport_sensitive_actions.push_back (act);
 }
 
 void
@@ -659,72 +669,55 @@ ARDOUR_UI::build_menu_bar ()
 	menu_bar->set_name ("MainMenuBar");
 
 	EventBox* ev = manage (new EventBox);
+	ev->set_name ("MainMenuBar");
 	ev->show ();
-	CairoHPacker* hbox = manage (new CairoHPacker);
-	hbox->set_name (X_("StatusBarBox"));
+
+	Gtk::HBox* hbox = manage (new Gtk::HBox);
 	hbox->show ();
-	hbox->set_border_width (3);
-
-	VBox* vbox = manage (new VBox);
-	vbox->pack_start (*hbox, true, false);
-	vbox->show();
-
-	ev->add (*vbox);
+	hbox->set_border_width (2);
+	ev->add (*hbox);
 
 	wall_clock_label.set_name ("WallClock");
 	wall_clock_label.set_use_markup ();
-	disk_space_label.set_name ("WallClock");
-	disk_space_label.set_use_markup ();
 	timecode_format_label.set_name ("WallClock");
 	timecode_format_label.set_use_markup ();
-	cpu_load_label.set_name ("CPULoad");
-	cpu_load_label.set_use_markup ();
-	xrun_label.set_name ("XrunLabel");
-	xrun_label.set_use_markup ();
 	peak_thread_work_label.set_name ("PeakThreadWork");
 	peak_thread_work_label.set_use_markup ();
-	buffer_load_label.set_name ("BufferLoad");
-	buffer_load_label.set_use_markup ();
 	sample_rate_label.set_name ("SampleRate");
 	sample_rate_label.set_use_markup ();
 	format_label.set_name ("Format");
 	format_label.set_use_markup ();
 
-#ifndef TOP_MENUBAR
-	menu_hbox.pack_start (*menu_bar, false, false);
-#else
+#ifdef __APPLE__
 	use_menubar_as_top_menubar ();
+#else
+	menu_hbox.pack_start (*menu_bar, false, false);
 #endif
 
 	hbox->pack_end (error_alert_button, false, false, 2);
-
-	hbox->pack_end (wall_clock_label, false, false, 2);
+	hbox->pack_end (dsp_load_label, false, false, 4);
 	hbox->pack_end (disk_space_label, false, false, 4);
-	hbox->pack_end (xrun_label, false, false, 4);
-	hbox->pack_end (peak_thread_work_label, false, false, 4);
-	hbox->pack_end (cpu_load_label, false, false, 4);
-	hbox->pack_end (buffer_load_label, false, false, 4);
 	hbox->pack_end (sample_rate_label, false, false, 4);
 	hbox->pack_end (timecode_format_label, false, false, 4);
 	hbox->pack_end (format_label, false, false, 4);
+	hbox->pack_end (peak_thread_work_label, false, false, 4);
+	hbox->pack_end (wall_clock_label, false, false, 2);
 
-	menu_hbox.pack_end (*ev, false, false, 2);
+	menu_hbox.pack_end (*ev, true, true, 2);
 
 	menu_bar_base.set_name ("MainMenuBar");
 	menu_bar_base.add (menu_hbox);
 
 #ifndef __APPLE__
 	// OSX provides its own wallclock, thank you very much
-	_status_bar_visibility.add (&wall_clock_label,      X_("WallClock"), _("Wall Clock"), true);
+	_status_bar_visibility.add (&wall_clock_label,      X_("WallClock"), _("Wall Clock"), false);
 #endif
-	_status_bar_visibility.add (&disk_space_label,      X_("Disk"),      _("Disk Space"), !Profile->get_small_screen());
-	_status_bar_visibility.add (&cpu_load_label,        X_("DSP"),       _("DSP"), true);
-	_status_bar_visibility.add (&xrun_label,            X_("XRun"),      _("X-run"), false);
 	_status_bar_visibility.add (&peak_thread_work_label,X_("Peakfile"),  _("Active Peak-file Work"), false);
-	_status_bar_visibility.add (&buffer_load_label,     X_("Buffers"),   _("Buffers"), true);
+	_status_bar_visibility.add (&format_label,          X_("Format"),    _("File Format"), false);
+	_status_bar_visibility.add (&timecode_format_label, X_("TCFormat"),  _("Timecode Format"), false);
 	_status_bar_visibility.add (&sample_rate_label,     X_("Audio"),     _("Audio"), true);
-	_status_bar_visibility.add (&timecode_format_label, X_("TCFormat"),  _("Timecode Format"), true);
-	_status_bar_visibility.add (&format_label,          X_("Format"),    _("File Format"), true);
+	_status_bar_visibility.add (&disk_space_label,      X_("Disk"),      _("Disk Space"), !Profile->get_small_screen());
+	_status_bar_visibility.add (&dsp_load_label,        X_("DSP"),       _("DSP"), true);
 
 	ev->signal_button_press_event().connect (sigc::mem_fun (_status_bar_visibility, &VisibilityGroup::button_press_event));
 	ev->signal_button_release_event().connect (sigc::mem_fun (*this, &ARDOUR_UI::xrun_button_release));
@@ -827,6 +820,8 @@ ARDOUR_UI::save_ardour_state ()
 
 	Config->save_state();
 
+	mixer->save_plugin_order_file();
+
 	UIConfiguration::instance().save_state ();
 
 	if (_session) {
@@ -860,9 +855,6 @@ ARDOUR_UI::save_ardour_state ()
 void
 ARDOUR_UI::resize_text_widgets ()
 {
-	set_size_request_to_display_given_text (cpu_load_label, "DSP: 100.0%", 2, 2);
-	set_size_request_to_display_given_text (buffer_load_label, "Buffers: p:100% c:100%", 2, 2);
-	set_size_request_to_display_given_text (xrun_label, "X: 9999", 2, 2);
 }
 
 void
@@ -882,7 +874,7 @@ ARDOUR_UI::xrun_button_release (GdkEventButton* ev)
 
 	if (_session) {
 		_session->reset_xrun_count ();
-		update_xrun_count ();
+		update_cpu_load ();
 	}
 	return true;
 }

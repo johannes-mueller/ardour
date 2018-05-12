@@ -120,7 +120,6 @@ class PluginPinWindowProxy : public WM::ProxyBase
 	ARDOUR::SessionHandlePtr* session_handle();
 
   private:
-	ProcessorBox* _processor_box;
 	boost::weak_ptr<ARDOUR::Processor> _processor;
 
 	void processor_going_away ();
@@ -255,10 +254,11 @@ private:
 		bool on_button_press_event (GdkEventButton *ev);
 		void update_height_alloc (uint32_t inline_height);
 
-		void display_frame (cairo_t* cr, double w, double h);
+		void display_sample (cairo_t* cr, double w, double h);
 
 		ProcessorEntry& _entry;
 		bool _scroll;
+		const uint32_t _given_max_height;
 	};
 
 	class LuaPluginDisplay : public PluginInlineDisplay {
@@ -552,6 +552,8 @@ private:
 	void for_selected_processors (void (ProcessorBox::*pmf)(boost::shared_ptr<ARDOUR::Processor>));
 	void get_selected_processors (ProcSelection&) const;
 
+	void set_disk_io_position (ARDOUR::DiskIOPoint);
+
 	bool can_cut() const;
 	bool stub_processor_selected() const;
 
@@ -562,6 +564,7 @@ private:
 	static Glib::RefPtr<Gtk::Action> delete_action;
 	static Glib::RefPtr<Gtk::Action> backspace_action;
 	static Glib::RefPtr<Gtk::Action> manage_pins_action;
+	static Glib::RefPtr<Gtk::Action> disk_io_action;
 	static Glib::RefPtr<Gtk::Action> edit_action;
 	static Glib::RefPtr<Gtk::Action> edit_generic_action;
 	void paste_processor_state (const XMLNodeList&, boost::shared_ptr<ARDOUR::Processor>);
@@ -595,6 +598,7 @@ private:
 	static void rb_deactivate_all ();
 	static void rb_ab_plugins ();
 	static void rb_manage_pins ();
+	static void rb_set_disk_io_position (ARDOUR::DiskIOPoint);
 	static void rb_edit ();
 	static void rb_edit_generic ();
 

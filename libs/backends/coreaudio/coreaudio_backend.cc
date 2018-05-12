@@ -27,11 +27,11 @@
 #include <glibmm.h>
 
 #include "coreaudio_backend.h"
-#include "rt_thread.h"
 
 #include "pbd/compose.h"
 #include "pbd/error.h"
 #include "pbd/file_utils.h"
+#include "pbd/pthread_utils.h"
 #include "ardour/filesystem_paths.h"
 #include "ardour/port_manager.h"
 #include "pbd/i18n.h"
@@ -110,6 +110,7 @@ CoreAudioBackend::CoreAudioBackend (AudioEngine& e, AudioBackendInfo& info)
 {
 	_instance_name = s_instance_name;
 	pthread_mutex_init (&_port_callback_mutex, 0);
+	pthread_mutex_init (&_port_registration_mutex, 0);
 	pthread_mutex_init (&_process_callback_mutex, 0);
 	pthread_mutex_init (&_freewheel_mutex, 0);
 	pthread_cond_init  (&_freewheel_signal, 0);
@@ -128,6 +129,7 @@ CoreAudioBackend::~CoreAudioBackend ()
 	delete _pcmio; _pcmio = 0;
 	delete _midiio; _midiio = 0;
 	pthread_mutex_destroy (&_port_callback_mutex);
+	pthread_mutex_destroy (&_port_registration_mutex);
 	pthread_mutex_destroy (&_process_callback_mutex);
 	pthread_mutex_destroy (&_freewheel_mutex);
 	pthread_cond_destroy  (&_freewheel_signal);
@@ -333,12 +335,12 @@ CoreAudioBackend::set_buffer_size (uint32_t bs)
 	_samples_per_period = bs;
 	_pcmio->set_samples_per_period(bs);
 	if (_run) {
-		coreaudio_set_realtime_policy (_main_thread);
+		pbd_mach_set_realtime_policy (_main_thread, 1e9 * _samples_per_period / _samplerate);
 	}
 	for (std::vector<pthread_t>::const_iterator i = _threads.begin (); i != _threads.end (); ++i) {
-		coreaudio_set_realtime_policy (*i);
+		pbd_mach_set_realtime_policy (*i, 1e9 * _samples_per_period / _samplerate);
 	}
-	engine.buffer_size_change (bs);
+	//engine.buffer_size_change (bs);
 	return 0;
 }
 
@@ -756,13 +758,13 @@ CoreAudioBackend::raw_buffer_size (DataType t)
 }
 
 /* Process time */
-framepos_t
+samplepos_t
 CoreAudioBackend::sample_time ()
 {
 	return _processed_samples;
 }
 
-framepos_t
+samplepos_t
 CoreAudioBackend::sample_time_at_cycle_start ()
 {
 	return _processed_samples;
@@ -822,34 +824,6 @@ CoreAudioBackend::coreaudio_process_thread (void *arg)
 	return 0;
 }
 
-bool
-CoreAudioBackend::coreaudio_set_realtime_policy (pthread_t thread_id) const
-{
-	thread_time_constraint_policy_data_t policy;
-#ifndef NDEBUG
-	mach_msg_type_number_t msgt = 4;
-	boolean_t dflt = false;
-	kern_return_t rv = thread_policy_get (pthread_mach_thread_np (_main_thread),
-			THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t) &policy,
-			&msgt, &dflt);
-	printf ("Coreaudio Main Thread(%p) %d %d %d %d DFLT %d OK: %d\n", _main_thread, policy.period, policy.computation, policy.constraint, policy.preemptible, dflt, rv == KERN_SUCCESS);
-#endif
-
-	double period_ns = 1e9 * _samples_per_period / _samplerate;
-	policy.period = AudioConvertNanosToHostTime (period_ns);
-	policy.computation = AudioConvertNanosToHostTime (period_ns * .9);
-	policy.constraint = AudioConvertNanosToHostTime (period_ns * .95);
-	policy.preemptible = true;
-	kern_return_t res = thread_policy_set (pthread_mach_thread_np (thread_id),
-			THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t) &policy,
-			THREAD_TIME_CONSTRAINT_POLICY_COUNT);
-
-#ifndef NDEBUG
-	printf ("Coreaudio Proc Thread(%p) %d %d %d %d OK: %d\n", thread_id, policy.period, policy.computation, policy.constraint, policy.preemptible, res == KERN_SUCCESS);
-#endif
-	return res != KERN_SUCCESS;
-}
-
 int
 CoreAudioBackend::create_process_thread (boost::function<void()> func)
 {
@@ -859,7 +833,7 @@ CoreAudioBackend::create_process_thread (boost::function<void()> func)
 
 	ThreadData* td = new ThreadData (this, func, stacksize);
 
-	if (_realtime_pthread_create (SCHED_FIFO, -22, stacksize,
+	if (pbd_realtime_pthread_create (PBD_SCHED_FIFO, -22, stacksize,
 	                              &thread_id, coreaudio_process_thread, td)) {
 		pthread_attr_init (&attr);
 		pthread_attr_setstacksize (&attr, stacksize);
@@ -872,7 +846,7 @@ CoreAudioBackend::create_process_thread (boost::function<void()> func)
 		pthread_attr_destroy (&attr);
 	}
 
-	if (coreaudio_set_realtime_policy (thread_id)) {
+	if (pbd_mach_set_realtime_policy (thread_id, 1e9 * _samples_per_period / _samplerate)) {
 		PBD::warning << _("AudioEngine: process thread failed to set mach realtime policy.") << endmsg;
 	}
 
@@ -966,8 +940,10 @@ CoreAudioBackend::set_port_name (PortEngine::PortHandle port, const std::string&
 	}
 
 	CoreBackendPort* p = static_cast<CoreBackendPort*>(port);
+	pthread_mutex_lock (&_port_registration_mutex);
 	_portmap.erase (p->name());
 	_portmap.insert (make_pair (newname, p));
+	pthread_mutex_unlock (&_port_registration_mutex);
 	return p->set_name (newname);
 }
 
@@ -1094,8 +1070,10 @@ CoreAudioBackend::add_port (
 		return 0;
 	}
 
+	pthread_mutex_lock (&_port_registration_mutex);
 	_ports.insert (port);
 	_portmap.insert (make_pair (name, port));
+	pthread_mutex_unlock (&_port_registration_mutex);
 
 	return port;
 }
@@ -1113,8 +1091,10 @@ CoreAudioBackend::unregister_port (PortEngine::PortHandle port_handle)
 		return;
 	}
 	disconnect_all(port_handle);
+	pthread_mutex_lock (&_port_registration_mutex);
 	_portmap.erase (port->name());
 	_ports.erase (i);
+	pthread_mutex_unlock (&_port_registration_mutex);
 	delete port;
 }
 
@@ -1160,6 +1140,24 @@ CoreAudioBackend::register_system_audio_ports()
 		_system_outputs.push_back(cp);
 	}
 	return 0;
+}
+
+void
+CoreAudioBackend::update_system_port_latecies ()
+{
+	for (std::vector<CoreBackendPort*>::const_iterator it = _system_inputs.begin (); it != _system_inputs.end (); ++it) {
+		(*it)->update_connected_latency (true);
+	}
+	for (std::vector<CoreBackendPort*>::const_iterator it = _system_outputs.begin (); it != _system_outputs.end (); ++it) {
+		(*it)->update_connected_latency (false);
+	}
+
+	for (std::vector<CoreBackendPort*>::const_iterator it = _system_midi_in.begin (); it != _system_midi_in.end (); ++it) {
+		(*it)->update_connected_latency (true);
+	}
+	for (std::vector<CoreBackendPort*>::const_iterator it = _system_midi_out.begin (); it != _system_midi_out.end (); ++it) {
+		(*it)->update_connected_latency (false);
+	}
 }
 
 void
@@ -1644,6 +1642,7 @@ CoreAudioBackend::pre_process ()
 		manager.graph_order_callback();
 	}
 	if (connections_changed || ports_changed) {
+		update_system_port_latecies ();
 		engine.latency_callback(false);
 		engine.latency_callback(true);
 	}
@@ -1714,7 +1713,7 @@ CoreAudioBackend::freewheel_thread ()
 			AudioEngine::thread_init_callback (this);
 			_midiio->set_enabled(false);
 			reset_midi_parsers ();
-			coreaudio_set_realtime_policy (_main_thread);
+			pbd_mach_set_realtime_policy (_main_thread, 1e9 * _samples_per_period / _samplerate);
 		}
 
 		// process port updates first in every cycle.
@@ -1780,7 +1779,7 @@ CoreAudioBackend::process_callback (const uint32_t n_samples, const uint64_t hos
 		_reinit_thread_callback = false;
 		_main_thread = pthread_self();
 		AudioEngine::thread_init_callback (this);
-		coreaudio_set_realtime_policy (_main_thread);
+		pbd_mach_set_realtime_policy (_main_thread, 1e9 * _samples_per_period / _samplerate);
 	}
 
 	if (pthread_mutex_trylock (&_process_callback_mutex)) {
@@ -2081,7 +2080,6 @@ void CoreBackendPort::_disconnect (CoreBackendPort *port, bool callback)
 	}
 }
 
-
 void CoreBackendPort::disconnect_all ()
 {
 	while (!_connections.empty ()) {
@@ -2106,6 +2104,37 @@ bool CoreBackendPort::is_physically_connected () const
 		}
 	}
 	return false;
+}
+
+void
+CoreBackendPort::set_latency_range (const LatencyRange &latency_range, bool for_playback)
+{
+	if (for_playback) {
+		_playback_latency_range = latency_range;
+	} else {
+		_capture_latency_range = latency_range;
+	}
+
+	for (std::set<CoreBackendPort*>::const_iterator it = _connections.begin (); it != _connections.end (); ++it) {
+		if ((*it)->is_physical ()) {
+			(*it)->update_connected_latency (is_input ());
+		}
+	}
+}
+
+void
+CoreBackendPort::update_connected_latency (bool for_playback)
+{
+	LatencyRange lr;
+	lr.min = lr.max = 0;
+	const std::set<CoreBackendPort *>& cp = get_connections ();
+	for (std::set<CoreBackendPort*>::const_iterator it = cp.begin (); it != cp.end (); ++it) {
+		LatencyRange l;
+		l = (*it)->latency_range (for_playback);
+		lr.min = std::max (lr.min, l.min);
+		lr.max = std::max (lr.max, l.max);
+	}
+	set_latency_range (lr, for_playback);
 }
 
 /******************************************************************************/

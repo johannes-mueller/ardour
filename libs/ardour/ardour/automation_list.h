@@ -40,7 +40,7 @@
 namespace ARDOUR {
 
 class AutomationList;
-class DoubleBeatsFramesConverter;
+class DoubleBeatsSamplesConverter;
 
 /** A SharedStatefulProperty for AutomationLists */
 class LIBARDOUR_API AutomationListProperty : public PBD::SharedStatefulProperty<AutomationList>
@@ -82,17 +82,17 @@ public:
 	AutomationList& operator= (const AutomationList&);
 
 	void thaw ();
-	bool paste (const ControlList&, double, DoubleBeatsFramesConverter const&);
+	bool paste (const ControlList&, double, DoubleBeatsSamplesConverter const&);
 
 	void set_automation_state (AutoState);
 	AutoState automation_state() const;
 	PBD::Signal1<void, AutoState> automation_state_changed;
 
 	bool automation_playback() const {
-		return (_state & Play) || ((_state & Touch) && !touching());
+		return (_state & Play) || ((_state & (Touch | Latch)) && !touching());
 	}
 	bool automation_write () const {
-		return ((_state & Write) || ((_state & Touch) && touching()));
+		return ((_state & Write) || ((_state & (Touch | Latch)) && touching()));
 	}
 
 	PBD::Signal0<void> StateChanged;
@@ -106,7 +106,7 @@ public:
 	void stop_touch (double when);
 	bool touching() const { return g_atomic_int_get (const_cast<gint*>(&_touching)); }
 	bool writing() const { return _state == Write; }
-	bool touch_enabled() const { return _state == Touch; }
+	bool touch_enabled() const { return _state & (Touch | Latch); }
 
 	XMLNode& get_state ();
 	int set_state (const XMLNode &, int version);
@@ -125,7 +125,7 @@ private:
 	void create_curve_if_necessary ();
 	int deserialize_events (const XMLNode&);
 
-	XMLNode& state (bool full, bool need_lock);
+	XMLNode& state (bool save_auto_state, bool need_lock);
 	XMLNode& serialize_events (bool need_lock);
 
 	void maybe_signal_changed ();

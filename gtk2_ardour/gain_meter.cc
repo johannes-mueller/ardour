@@ -113,8 +113,10 @@ GainMeterBase::GainMeterBase (Session* s, bool horizontal, int fader_length, int
 
 	if (horizontal) {
 		gain_slider = manage (new HSliderController (&gain_adjustment, boost::shared_ptr<PBD::Controllable>(), fader_length, fader_girth));
+		gain_slider->set_tweaks (ArdourFader::Tweaks(ArdourFader::NoButtonForward | ArdourFader::NoVerticalScroll));
 	} else {
 		gain_slider = manage (new VSliderController (&gain_adjustment, boost::shared_ptr<PBD::Controllable>(), fader_length, fader_girth));
+		gain_slider->set_tweaks (ArdourFader::NoButtonForward);
 	}
 
 	level_meter = new LevelMeterHBox(_session);
@@ -123,7 +125,6 @@ GainMeterBase::GainMeterBase (Session* s, bool horizontal, int fader_length, int
 	meter_metric_area.signal_button_press_event().connect (sigc::mem_fun (*this, &GainMeterBase::level_meter_button_press));
 	meter_metric_area.add_events (Gdk::BUTTON_PRESS_MASK);
 
-	gain_slider->set_tweaks (ArdourFader::Tweaks(ArdourFader::NoButtonForward | ArdourFader::NoVerticalScroll));
 	gain_slider->StartGesture.connect (sigc::mem_fun (*this, &GainMeter::amp_start_touch));
 	gain_slider->StopGesture.connect (sigc::mem_fun (*this, &GainMeter::amp_stop_touch));
 	gain_slider->set_name ("GainFader");
@@ -262,6 +263,8 @@ GainMeterBase::set_controls (boost::shared_ptr<Route> r,
 							      sigc::bind (sigc::mem_fun (*this, &GainMeterBase::set_gain_astate), (AutoState) ARDOUR::Write)));
 		gain_astate_menu.items().push_back (MenuElem (_("Touch"),
 							      sigc::bind (sigc::mem_fun (*this, &GainMeterBase::set_gain_astate), (AutoState) ARDOUR::Touch)));
+		gain_astate_menu.items().push_back (MenuElem (_("Latch"),
+							      sigc::bind (sigc::mem_fun (*this, &GainMeterBase::set_gain_astate), (AutoState) ARDOUR::Latch)));
 
 		connections.push_back (gain_automation_state_button.signal_button_press_event().connect (sigc::mem_fun(*this, &GainMeterBase::gain_automation_state_button_event), false));
 		connections.push_back (ChangeGainAutomationState.connect (sigc::mem_fun(*this, &GainMeterBase::set_gain_astate)));
@@ -731,13 +734,13 @@ GainMeterBase::meter_point_clicked (MeterPoint mp)
 void
 GainMeterBase::amp_start_touch ()
 {
-	_control->start_touch (_control->session().transport_frame());
+	_control->start_touch (_control->session().transport_sample());
 }
 
 void
 GainMeterBase::amp_stop_touch ()
 {
-	_control->stop_touch (_control->session().transport_frame());
+	_control->stop_touch (_control->session().transport_sample());
 	effective_gain_display ();
 }
 
@@ -782,16 +785,19 @@ GainMeterBase::_astate_string (AutoState state, bool shrt)
 
 	switch (state) {
 	case ARDOUR::Off:
-		sstr = (shrt ? "M" : _("M"));
+		sstr = (shrt ? "M" : S_("Manual|M"));
 		break;
 	case Play:
-		sstr = (shrt ? "P" : _("P"));
+		sstr = (shrt ? "P" : S_("Play|P"));
 		break;
 	case Touch:
-		sstr = (shrt ? "T" : _("T"));
+		sstr = (shrt ? "T" : S_("Trim|T"));
+		break;
+	case Latch:
+		sstr = (shrt ? "L" : S_("Latch|L"));
 		break;
 	case Write:
-		sstr = (shrt ? "W" : _("W"));
+		sstr = (shrt ? "W" : S_("Write|W"));
 		break;
 	}
 

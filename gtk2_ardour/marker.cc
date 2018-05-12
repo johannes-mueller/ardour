@@ -64,7 +64,7 @@ void ArdourMarker::setup_sizes(const double timebar_height)
 }
 
 ArdourMarker::ArdourMarker (PublicEditor& ed, ArdourCanvas::Container& parent, guint32 rgba, const string& annotation,
-		Type type, framepos_t frame, bool handle_events)
+		Type type, samplepos_t sample, bool handle_events)
 
 	: editor (ed)
 	, _parent (&parent)
@@ -255,8 +255,8 @@ ArdourMarker::ArdourMarker (PublicEditor& ed, ArdourCanvas::Container& parent, g
 
 	}
 
-	frame_position = frame;
-	unit_position = editor.sample_to_pixel (frame);
+	sample_position = sample;
+	unit_position = editor.sample_to_pixel (sample);
 	unit_position -= _shift;
 
 	group = new ArdourCanvas::Container (&parent, ArdourCanvas::Duple (unit_position, 1));
@@ -348,7 +348,6 @@ ArdourMarker::setup_line ()
 		if (_track_canvas_line == 0) {
 
 			_track_canvas_line = new ArdourCanvas::Line (editor.get_hscroll_group());
-			_track_canvas_line->set_outline_color (UIConfiguration::instance().color ("edit point"));
 			_track_canvas_line->Event.connect (sigc::bind (sigc::mem_fun (editor, &PublicEditor::canvas_marker_event), group, this));
 		}
 
@@ -359,7 +358,7 @@ ArdourMarker::setup_line ()
 		_track_canvas_line->set_x1 (d.x);
 		_track_canvas_line->set_y0 (d.y);
 		_track_canvas_line->set_y1 (ArdourCanvas::COORD_MAX);
-		_track_canvas_line->set_outline_color (_selected ? UIConfiguration::instance().color ("edit point") : _color);
+		_track_canvas_line->set_outline_color ( _selected ? UIConfiguration::instance().color ("entered marker") : _color );
 		_track_canvas_line->raise_to_top ();
 		_track_canvas_line->show ();
 
@@ -387,6 +386,10 @@ void
 ArdourMarker::set_name (const string& new_name)
 {
 	_name = new_name;
+
+	mark->set_tooltip(new_name);
+	_name_background->set_tooltip(new_name);
+	_name_item->set_tooltip(new_name);
 
 	setup_name_display ();
 }
@@ -460,18 +463,18 @@ ArdourMarker::setup_name_display ()
 }
 
 void
-ArdourMarker::set_position (framepos_t frame)
+ArdourMarker::set_position (samplepos_t sample)
 {
-	unit_position = editor.sample_to_pixel (frame) - _shift;
+	unit_position = editor.sample_to_pixel (sample) - _shift;
 	group->set_x_position (unit_position);
 	setup_line ();
-	frame_position = frame;
+	sample_position = sample;
 }
 
 void
 ArdourMarker::reposition ()
 {
-	set_position (frame_position);
+	set_position (sample_position);
 }
 
 void
@@ -550,7 +553,7 @@ ArdourMarker::set_right_label_limit (double p)
 
 TempoMarker::TempoMarker (PublicEditor& editor, ArdourCanvas::Container& parent, guint32 rgba, const string& text,
 			  ARDOUR::TempoSection& temp)
-	: ArdourMarker (editor, parent, rgba, text, Tempo, temp.frame(), false),
+	: ArdourMarker (editor, parent, rgba, text, Tempo, temp.sample(), false),
 	  _tempo (temp)
 {
 	group->Event.connect (sigc::bind (sigc::mem_fun (editor, &PublicEditor::canvas_tempo_marker_event), group, this));
@@ -584,7 +587,7 @@ TempoMarker::update_height_mark (const double ratio)
 
 MeterMarker::MeterMarker (PublicEditor& editor, ArdourCanvas::Container& parent, guint32 rgba, const string& text,
 			  ARDOUR::MeterSection& m)
-	: ArdourMarker (editor, parent, rgba, text, Meter, m.frame(), false),
+	: ArdourMarker (editor, parent, rgba, text, Meter, m.sample(), false),
 	  _meter (m)
 {
 	group->Event.connect (sigc::bind (sigc::mem_fun (editor, &PublicEditor::canvas_meter_marker_event), group, this));

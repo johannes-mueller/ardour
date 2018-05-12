@@ -31,9 +31,12 @@ public:
 	ArdourVSpacer (float r = 0.75f);
 
 protected:
-	void render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_t* r) {
-		float h = r->height * ratio;
-		float t = .5f * (r->height - h);
+	void render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_t*) {
+
+		float height = get_height();
+
+		float h = height * ratio;
+		float t = .5f * (height - h);
 		ctx->rectangle (0, t, 1, h);
 		ctx->set_source_rgb (0, 0, 0);
 		ctx->fill ();
@@ -46,6 +49,48 @@ protected:
 	}
 
 	float ratio;
+};
+
+class LIBWIDGETS_API ArdourDropShadow : public CairoWidget
+{
+public:
+	enum ShadowMode {
+		DropShadowLongSideOnly,
+		DropShadowBoth,
+	};
+
+	ArdourDropShadow (ShadowMode m = DropShadowLongSideOnly, float a = 0.55f);
+
+	void set_mode(ShadowMode m) {mode = m;}
+
+protected:
+	void render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_t*) {
+		float width = get_width();
+		float height = get_height();
+
+		Cairo::RefPtr<Cairo::LinearGradient> _gradient;
+
+		if ( (width>height) || mode == DropShadowBoth ) {
+			_gradient = Cairo::LinearGradient::create (0, 0, 0, 4);
+			_gradient->add_color_stop_rgba (0, 0, 0, 0, alpha);
+			_gradient->add_color_stop_rgba (1, 0, 0, 0, 0);
+			ctx->set_source (_gradient);
+			ctx->rectangle (0, 0, width, 4);
+			ctx->fill ();
+		}
+
+		if ( (height>width) || mode == DropShadowBoth ) {
+			_gradient = Cairo::LinearGradient::create (0, 0, 4, 0);
+			_gradient->add_color_stop_rgba (0, 0, 0, 0, alpha);
+			_gradient->add_color_stop_rgba (1, 0, 0, 0, 0);
+			ctx->set_source (_gradient);
+			ctx->rectangle (0, 0, 4, height);
+			ctx->fill ();
+		}		
+	}
+
+	float alpha;
+	ShadowMode mode;
 };
 
 } /* end namespace */

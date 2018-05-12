@@ -65,13 +65,10 @@ public:
 
 	void helper_thread();
 
-	int silent_process_routes (pframes_t nframes, framepos_t start_frame, framepos_t end_frame,
-	                           bool& need_butler);
-
-	int process_routes (pframes_t nframes, framepos_t start_frame, framepos_t end_frame, int declick,
+	int process_routes (pframes_t nframes, samplepos_t start_sample, samplepos_t end_sample, int declick,
 	                    bool& need_butler);
 
-	int routes_no_roll (pframes_t nframes, framepos_t start_frame, framepos_t end_frame,
+	int routes_no_roll (pframes_t nframes, samplepos_t start_sample, samplepos_t end_sample,
 	                    bool non_rt_pending, int declick);
 
 	void process_one_route (Route * route);
@@ -124,13 +121,12 @@ private:
 
 	// parameter caches.
 	pframes_t  _process_nframes;
-	framepos_t _process_start_frame;
-	framepos_t _process_end_frame;
+	samplepos_t _process_start_sample;
+	samplepos_t _process_end_sample;
 	bool	   _process_can_record;
 	bool	   _process_non_rt_pending;
 	int        _process_declick;
 
-	bool _process_silent;
 	bool _process_noroll;
 	int  _process_retval;
 	bool _process_need_butler;

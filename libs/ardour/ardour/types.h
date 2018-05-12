@@ -31,8 +31,9 @@
 
 #include <inttypes.h>
 
-#include "timecode/bbt_time.h"
-#include "timecode/time.h"
+#include "temporal/bbt_time.h"
+#include "temporal/time.h"
+#include "temporal/types.h"
 
 #include "pbd/id.h"
 
@@ -42,6 +43,9 @@
 #include "ardour/plugin_types.h"
 
 #include <map>
+
+using Temporal::max_samplepos;
+using Temporal::max_samplecnt;
 
 #if __GNUC__ < 3
 typedef int intptr_t;
@@ -65,27 +69,15 @@ namespace ARDOUR {
 	typedef uint64_t microseconds_t;
 	typedef uint32_t pframes_t;
 
-	/* Any position measured in audio frames.
-	   Assumed to be non-negative but not enforced.
-	*/
-	typedef int64_t framepos_t;
+	/* rebind Temporal position types into ARDOUR namespace */
+	typedef Temporal::samplecnt_t samplecnt_t;
+	typedef Temporal::samplepos_t samplepos_t;
+	typedef Temporal::sampleoffset_t sampleoffset_t;
 
-	/* Any distance from a given framepos_t.
-	   Maybe positive or negative.
-	*/
-	typedef int64_t frameoffset_t;
-
-	/* Any count of audio frames.
-	   Assumed to be positive but not enforced.
-	*/
-	typedef int64_t framecnt_t;
-
-	static const framepos_t max_framepos = INT64_MAX;
-	static const framecnt_t max_framecnt = INT64_MAX;
 	static const layer_t    max_layer    = UINT32_MAX;
 
 	// a set of (time) intervals: first of pair is the offset of the start within the region, second is the offset of the end
-	typedef std::list<std::pair<frameoffset_t, frameoffset_t> > AudioIntervalResult;
+	typedef std::list<std::pair<sampleoffset_t, sampleoffset_t> > AudioIntervalResult;
 	// associate a set of intervals with regions (e.g. for silence detection)
 	typedef std::map<boost::shared_ptr<ARDOUR::Region>,AudioIntervalResult> AudioIntervalMap;
 
@@ -159,14 +151,41 @@ namespace ARDOUR {
 		PhaseAutomation,
 		MonitoringAutomation,
 		BusSendLevel,
-		BusSendEnable
+		BusSendEnable,
+
+		/* used only by Controllable Descriptor to access send parameters */
+
+		SendLevelAutomation,
+		SendEnableAutomation,
+		SendAzimuthAutomation,
+
+		/* these describe "well known" controls of a Stripable that are
+		   covered by the types above. They should be used only as part
+		   of ControllableDescriptor
+		*/
+
+		EQEnableAutomation,
+		EQGainAutomation,
+		EQFreqAutomation,
+		EQQAutomation,
+		EQShapeAutomation,
+		FilterFreqAutomation,
+		FilterSlopeAutomation,
+		FilterEnableAutomation,
+		CompressorEnableAutomation,
+		CompressorThresholdAutomation,
+		CompressorSpeedAutomation,
+		CompressorModeAutomation,
+		CompressorMakeupAutomation,
+		/* Redux not included because it is read-only */
 	};
 
 	enum AutoState {
-		Off = 0x0,
-		Write = 0x1,
-		Touch = 0x2,
-		Play = 0x4
+		Off   = 0x00,
+		Write = 0x01,
+		Touch = 0x02,
+		Play  = 0x04,
+		Latch = 0x08
 	};
 
 	std::string auto_state_to_string (AutoState);
@@ -189,6 +208,12 @@ namespace ARDOUR {
 		MeterPostFader,
 		MeterOutput,
 		MeterCustom
+	};
+
+	enum DiskIOPoint {
+		DiskIOPreFader,  /* after the trim control, but before other processors */
+		DiskIOPostFader, /* before the main outs, after other processors */
+		DiskIOCustom,   /* up to the user. Caveat Emptor! */
 	};
 
 	enum MeterType {
@@ -239,12 +264,17 @@ namespace ARDOUR {
 		RoundUpMaybe    = 2    ///< Round up only if necessary
 	};
 
+	enum SnapPref {
+		SnapToAny    = 0,   ///< Snaps to the closest of ( snap prefs, grid quantization )
+		SnapToGrid   = 1,   ///< Prefer snapping to the closest grid quantization, if a Grid selection is enabled
+	};
+
 	class AnyTime {
 	public:
 		enum Type {
 			Timecode,
 			BBT,
-			Frames,
+			Samples,
 			Seconds
 		};
 
@@ -254,11 +284,11 @@ namespace ARDOUR {
 		Timecode::BBT_Time bbt;
 
 		union {
-			framecnt_t     frames;
+			samplecnt_t     samples;
 			double         seconds;
 		};
 
-		AnyTime() { type = Frames; frames = 0; }
+		AnyTime() { type = Samples; samples = 0; }
 
 		bool operator== (AnyTime const & other) const {
 			if (type != other.type) { return false; }
@@ -268,8 +298,8 @@ namespace ARDOUR {
 				return timecode == other.timecode;
 			  case BBT:
 				return bbt == other.bbt;
-			  case Frames:
-				return frames == other.frames;
+			  case Samples:
+				return samples == other.samples;
 			  case Seconds:
 				return seconds == other.seconds;
 			}
@@ -284,8 +314,8 @@ namespace ARDOUR {
 				       timecode.seconds != 0 || timecode.frames != 0;
 			  case BBT:
 				return bbt.bars != 0 || bbt.beats != 0 || bbt.ticks != 0;
-			  case Frames:
-				return frames != 0;
+			  case Samples:
+				return samples != 0;
 			  case Seconds:
 				return seconds != 0;
 			}
@@ -295,38 +325,38 @@ namespace ARDOUR {
 		}
 	};
 
-	/* used for translating audio frames to an exact musical position using a note divisor.
-	   an exact musical position almost never falls exactly on an audio frame, but for sub-sample
-	   musical accuracy we need to derive exact musical locations from a frame position
-	   the division follows TempoMap::exact_beat_at_frame().
+	/* used for translating audio samples to an exact musical position using a note divisor.
+	   an exact musical position almost never falls exactly on an audio sample, but for sub-sample
+	   musical accuracy we need to derive exact musical locations from a sample position
+	   the division follows TempoMap::exact_beat_at_sample().
 	   division
-	   -1       musical location is the bar closest to frame
-	    0       musical location is the musical position of the frame
-	    1       musical location is the BBT beat closest to frame
-	    n       musical location is the quarter-note division n closest to frame
+	   -1       musical location is the bar closest to sample
+	    0       musical location is the musical position of the sample
+	    1       musical location is the BBT beat closest to sample
+	    n       musical location is the quarter-note division n closest to sample
 	*/
-	struct MusicFrame {
-		framepos_t frame;
+	struct MusicSample {
+		samplepos_t sample;
 		int32_t    division;
 
-		MusicFrame (framepos_t f, int32_t d) : frame (f), division (d) {}
+		MusicSample (samplepos_t f, int32_t d) : sample (f), division (d) {}
 
-		void set (framepos_t f, int32_t d) {frame = f; division = d; }
+		void set (samplepos_t f, int32_t d) {sample = f; division = d; }
 
-		MusicFrame operator- (MusicFrame other) { return MusicFrame (frame - other.frame, 0); }
+		MusicSample operator- (MusicSample other) { return MusicSample (sample - other.sample, 0); }
 	};
 
 	/* XXX: slightly unfortunate that there is this and Evoral::Range<>,
 	   but this has a uint32_t id which Evoral::Range<> does not.
 	*/
 	struct AudioRange {
-		framepos_t start;
-		framepos_t end;
+		samplepos_t start;
+		samplepos_t end;
 		uint32_t id;
 
-		AudioRange (framepos_t s, framepos_t e, uint32_t i) : start (s), end (e) , id (i) {}
+		AudioRange (samplepos_t s, samplepos_t e, uint32_t i) : start (s), end (e) , id (i) {}
 
-		framecnt_t length() const { return end - start + 1; }
+		samplecnt_t length() const { return end - start + 1; }
 
 		bool operator== (const AudioRange& other) const {
 			return start == other.start && end == other.end && id == other.id;
@@ -336,7 +366,7 @@ namespace ARDOUR {
 			return start == other.start && end == other.end;
 		}
 
-		Evoral::OverlapType coverage (framepos_t s, framepos_t e) const {
+		Evoral::OverlapType coverage (samplepos_t s, samplepos_t e) const {
 			return Evoral::coverage (start, end, s, e);
 		}
 	};
@@ -428,6 +458,7 @@ namespace ARDOUR {
 		MonitoringSilence = 0x1,
 		MonitoringInput = 0x2,
 		MonitoringDisk = 0x4,
+		MonitoringCue = 0x6,
 	};
 
 	enum MeterState {
@@ -461,6 +492,12 @@ namespace ARDOUR {
 		AFLFromBeforeProcessors,
 		/** AFL signals come post-fader but after post-fader processors */
 		AFLFromAfterProcessors
+	};
+
+	enum ClockDeltaMode {
+		NoDelta,
+		DeltaEditPoint,
+		DeltaOriginMarker
 	};
 
 	enum DenormalModel {
@@ -563,7 +600,7 @@ namespace ARDOUR {
 		SrcFastest
 	};
 
-	typedef std::list<framepos_t> AnalysisFeatureList;
+	typedef std::list<samplepos_t> AnalysisFeatureList;
 
 	typedef std::list<boost::shared_ptr<Route> > RouteList;
 	typedef std::list<boost::shared_ptr<Stripable> > StripableList;
@@ -704,40 +741,17 @@ namespace ARDOUR {
 		SMFTempoUse,
 	};
 
+	struct CaptureInfo {
+		samplepos_t start;
+		samplecnt_t samples;
+	};
+
+	typedef std::vector<CaptureInfo*> CaptureInfos;
+
 } // namespace ARDOUR
-
-static inline ARDOUR::framepos_t
-session_frame_to_track_frame (ARDOUR::framepos_t session_frame, double speed)
-{
-	long double result = (long double) session_frame * (long double) speed;
-
-	if (result >= (long double) ARDOUR::max_framepos) {
-		return ARDOUR::max_framepos;
-	} else if (result <= (long double) (ARDOUR::max_framepos) * (ARDOUR::framepos_t)(-1)) {
-		return (ARDOUR::max_framepos * (ARDOUR::framepos_t)(-1));
-	} else {
-		return result;
-	}
-}
-
-static inline ARDOUR::framepos_t
-track_frame_to_session_frame (ARDOUR::framepos_t track_frame, double speed)
-{
-	/* NB - do we need a check for speed == 0 ??? */
-	long double result = (long double) track_frame / (long double) speed;
-
-	if (result >= (long double) ARDOUR::max_framepos) {
-		return ARDOUR::max_framepos;
-	} else if (result <= (long double) (ARDOUR::max_framepos) * (ARDOUR::framepos_t)(-1)) {
-		return (ARDOUR::max_framepos * (ARDOUR::framepos_t)(-1));
-	} else {
-		return result;
-	}
-}
 
 /* for now, break the rules and use "using" to make this "global" */
 
-using ARDOUR::framepos_t;
-
+using ARDOUR::samplepos_t;
 
 #endif /* __ardour_types_h__ */

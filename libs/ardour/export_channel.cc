@@ -35,14 +35,33 @@
 using namespace ARDOUR;
 
 PortExportChannel::PortExportChannel ()
-	: buffer_size(0)
+	: _buffer_size (0)
 {
 }
 
-void PortExportChannel::set_max_buffer_size(framecnt_t frames)
+PortExportChannel::~PortExportChannel ()
 {
-	buffer_size = frames;
-	buffer.reset (new Sample[frames]);
+	_delaylines.clear ();
+}
+
+void PortExportChannel::set_max_buffer_size(samplecnt_t samples)
+{
+	_buffer_size = samples;
+	_buffer.reset (new Sample[samples]);
+
+	_delaylines.clear ();
+
+	for (PortSet::const_iterator it = ports.begin(); it != ports.end(); ++it) {
+		boost::shared_ptr<AudioPort> p = it->lock ();
+		if (!p) { continue; }
+		samplecnt_t latency = p->private_latency_range (true).max;
+		PBD::RingBuffer<Sample>* rb = new PBD::RingBuffer<Sample> (latency + 1 + _buffer_size);
+		for (samplepos_t i = 0; i < latency; ++i) {
+			Sample zero = 0;
+			rb->write (&zero, 1);
+		}
+		_delaylines.push_back (boost::shared_ptr<PBD::RingBuffer<Sample> >(rb));
+	}
 }
 
 bool
@@ -56,35 +75,41 @@ PortExportChannel::operator< (ExportChannel const & other) const
 }
 
 void
-PortExportChannel::read (Sample const *& data, framecnt_t frames) const
+PortExportChannel::read (Sample const *& data, samplecnt_t samples) const
 {
-	assert(buffer);
-	assert(frames <= buffer_size);
+	assert(_buffer);
+	assert(samples <= _buffer_size);
 
-	if (ports.size() == 1) {
+	if (ports.size() == 1 && _delaylines.size() ==1 && _delaylines.front()->bufsize () == _buffer_size + 1) {
 		boost::shared_ptr<AudioPort> p = ports.begin()->lock ();
-		AudioBuffer& ab (p->get_audio_buffer(frames)); // unsets AudioBuffer::_written
+		AudioBuffer& ab (p->get_audio_buffer(samples)); // unsets AudioBuffer::_written
 		data = ab.data();
 		ab.set_written (true);
 		return;
 	}
 
-	memset (buffer.get(), 0, frames * sizeof (Sample));
+	memset (_buffer.get(), 0, samples * sizeof (Sample));
 
+	std::list <boost::shared_ptr<PBD::RingBuffer<Sample> > >::const_iterator di = _delaylines.begin ();
 	for (PortSet::const_iterator it = ports.begin(); it != ports.end(); ++it) {
 		boost::shared_ptr<AudioPort> p = it->lock ();
-		if (p) {
-			AudioBuffer& ab (p->get_audio_buffer(frames)); // unsets AudioBuffer::_written
-			Sample* port_buffer = ab.data();
-			ab.set_written (true);
-
-			for (uint32_t i = 0; i < frames; ++i) {
-				buffer[i] += (float) port_buffer[i];
-			}
+		if (!p) {
+			continue;
 		}
+		AudioBuffer& ab (p->get_audio_buffer(samples)); // unsets AudioBuffer::_written
+		Sample* port_buffer = ab.data();
+		ab.set_written (true);
+		(*di)->write (port_buffer, samples);
+		// TODO optimze, get_read_vector()
+		for (uint32_t i = 0; i < samples; ++i) {
+			Sample spl;
+			(*di)->read (&spl, 1);
+			_buffer[i] += spl;
+		}
+		++di;
 	}
 
-	data = buffer.get();
+	data = _buffer.get();
 }
 
 void
@@ -120,7 +145,7 @@ RegionExportChannelFactory::RegionExportChannelFactory (Session * session, Audio
 	: region (region)
 	, track (track)
 	, type (type)
-	, frames_per_cycle (session->engine().samples_per_cycle ())
+	, samples_per_cycle (session->engine().samples_per_cycle ())
 	, buffers_up_to_date (false)
 	, region_start (region.position())
 	, position (region_start)
@@ -132,9 +157,9 @@ RegionExportChannelFactory::RegionExportChannelFactory (Session * session, Audio
 	  case Fades:
 		n_channels = region.n_channels();
 
-		mixdown_buffer.reset (new Sample [frames_per_cycle]);
-		gain_buffer.reset (new Sample [frames_per_cycle]);
-		std::fill_n (gain_buffer.get(), frames_per_cycle, Sample (1.0));
+		mixdown_buffer.reset (new Sample [samples_per_cycle]);
+		gain_buffer.reset (new Sample [samples_per_cycle]);
+		std::fill_n (gain_buffer.get(), samples_per_cycle, Sample (1.0));
 
 		break;
 	  case Processed:
@@ -146,7 +171,7 @@ RegionExportChannelFactory::RegionExportChannelFactory (Session * session, Audio
 
 	session->ProcessExport.connect_same_thread (export_connection, boost::bind (&RegionExportChannelFactory::new_cycle_started, this, _1));
 
-	buffers.ensure_buffers (DataType::AUDIO, n_channels, frames_per_cycle);
+	buffers.ensure_buffers (DataType::AUDIO, n_channels, samples_per_cycle);
 	buffers.set_count (ChanCount (DataType::AUDIO, n_channels));
 }
 
@@ -162,13 +187,13 @@ RegionExportChannelFactory::create (uint32_t channel)
 }
 
 void
-RegionExportChannelFactory::read (uint32_t channel, Sample const *& data, framecnt_t frames_to_read)
+RegionExportChannelFactory::read (uint32_t channel, Sample const *& data, samplecnt_t samples_to_read)
 {
 	assert (channel < n_channels);
-	assert (frames_to_read <= frames_per_cycle);
+	assert (samples_to_read <= samples_per_cycle);
 
 	if (!buffers_up_to_date) {
-		update_buffers(frames_to_read);
+		update_buffers(samples_to_read);
 		buffers_up_to_date = true;
 	}
 
@@ -176,32 +201,32 @@ RegionExportChannelFactory::read (uint32_t channel, Sample const *& data, framec
 }
 
 void
-RegionExportChannelFactory::update_buffers (framecnt_t frames)
+RegionExportChannelFactory::update_buffers (samplecnt_t samples)
 {
-	assert (frames <= frames_per_cycle);
+	assert (samples <= samples_per_cycle);
 
 	switch (type) {
 	  case Raw:
 		for (size_t channel = 0; channel < n_channels; ++channel) {
-			region.read (buffers.get_audio (channel).data(), position - region_start, frames, channel);
+			region.read (buffers.get_audio (channel).data(), position - region_start, samples, channel);
 		}
 		break;
 	  case Fades:
 		assert (mixdown_buffer && gain_buffer);
 		for (size_t channel = 0; channel < n_channels; ++channel) {
-			memset (mixdown_buffer.get(), 0, sizeof (Sample) * frames);
-			buffers.get_audio (channel).silence(frames);
-			region.read_at (buffers.get_audio (channel).data(), mixdown_buffer.get(), gain_buffer.get(), position, frames, channel);
+			memset (mixdown_buffer.get(), 0, sizeof (Sample) * samples);
+			buffers.get_audio (channel).silence(samples);
+			region.read_at (buffers.get_audio (channel).data(), mixdown_buffer.get(), gain_buffer.get(), position, samples, channel);
 		}
 		break;
 	case Processed:
-		track.export_stuff (buffers, position, frames, track.main_outs(), true, true, false);
+		track.export_stuff (buffers, position, samples, track.main_outs(), true, true, false);
 		break;
 	default:
 		throw ExportFailed ("Unhandled type in ExportChannelFactory::update_buffers");
 	}
 
-	position += frames;
+	position += samples;
 }
 
 
@@ -231,22 +256,22 @@ RouteExportChannel::create_from_route(std::list<ExportChannelPtr> & result, boos
 }
 
 void
-RouteExportChannel::set_max_buffer_size(framecnt_t frames)
+RouteExportChannel::set_max_buffer_size(samplecnt_t samples)
 {
 	if (processor) {
-		processor->set_block_size (frames);
+		processor->set_block_size (samples);
 	}
 }
 
 void
-RouteExportChannel::read (Sample const *& data, framecnt_t frames) const
+RouteExportChannel::read (Sample const *& data, samplecnt_t samples) const
 {
 	assert(processor);
 	AudioBuffer const & buffer = processor->get_capture_buffers().get_audio (channel);
 #ifndef NDEBUG
-	(void) frames;
+	(void) samples;
 #else
-	assert (frames <= (framecnt_t) buffer.capacity());
+	assert (samples <= (samplecnt_t) buffer.capacity());
 #endif
 	data = buffer.data();
 }

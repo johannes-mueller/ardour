@@ -43,7 +43,9 @@ PBD::Signal0<void> Port::PortSignalDrop;
 bool         Port::_connecting_blocked = false;
 pframes_t    Port::_global_port_buffer_offset = 0;
 pframes_t    Port::_cycle_nframes = 0;
+double       Port::_speed_ratio = 1.0;
 std::string  Port::state_node_name = X_("Port");
+const uint32_t Port::_resampler_quality = 12;
 
 /* a handy define to shorten what would otherwise be a needlessly verbose
  * repeated phrase
@@ -53,10 +55,9 @@ std::string  Port::state_node_name = X_("Port");
 
 /** @param n Port short name */
 Port::Port (std::string const & n, DataType t, PortFlags f)
-	: _port_buffer_offset (0)
-	, _name (n)
+	: _name (n)
 	, _flags (f)
-        , _last_monitor (false)
+	, _last_monitor (false)
 {
 	_private_playback_latency.min = 0;
 	_private_playback_latency.max = 0;
@@ -340,17 +341,10 @@ Port::reset ()
 void
 Port::cycle_start (pframes_t)
 {
-        _port_buffer_offset = 0;
 }
 
 void
-Port::increment_port_buffer_offset (pframes_t nframes)
-{
-        _port_buffer_offset += nframes;
-}
-
-void
-Port::set_public_latency_range (LatencyRange& range, bool playback) const
+Port::set_public_latency_range (LatencyRange const& range, bool playback) const
 {
 	/* this sets the visible latency that the rest of the port system
 	   sees. because we do latency compensation, all (most) of our visible
@@ -363,7 +357,16 @@ Port::set_public_latency_range (LatencyRange& range, bool playback) const
 	                             (playback ? "PLAYBACK" : "CAPTURE")));;
 
 	if (_port_handle) {
-		port_engine.set_latency_range (_port_handle, playback, range);
+		LatencyRange r (range);
+		if (externally_connected ()) {
+#if 0
+			r.min *= _speed_ratio;
+			r.max *= _speed_ratio;
+#endif
+			r.min += (_resampler_quality - 1);
+			r.max += (_resampler_quality - 1);
+		}
+		port_engine.set_latency_range (_port_handle, playback, r);
 	}
 }
 
@@ -419,6 +422,14 @@ Port::public_latency_range (bool /*playback*/) const
 
 	if (_port_handle) {
 		r = port_engine.get_latency_range (_port_handle, sends_output() ? true : false);
+		if (externally_connected ()) {
+#if 0
+			r.min /= _speed_ratio;
+			r.max /= _speed_ratio;
+#endif
+			r.min += (_resampler_quality - 1);
+			r.max += (_resampler_quality - 1);
+		}
 
 		DEBUG_TRACE (DEBUG::Latency, string_compose (
 				     "GET PORT %1: %4 PUBLIC latency range %2 .. %3\n",
@@ -444,49 +455,57 @@ Port::get_connected_latency_range (LatencyRange& range, bool playback) const
 		DEBUG_TRACE (DEBUG::Latency, string_compose ("%1: %2 connections to check for latency range\n", name(), connections.size()));
 
 		for (vector<string>::const_iterator c = connections.begin();
-		     c != connections.end(); ++c) {
+				c != connections.end(); ++c) {
 
-                        LatencyRange lr;
+			LatencyRange lr;
 
-                        if (!AudioEngine::instance()->port_is_mine (*c)) {
+			if (!AudioEngine::instance()->port_is_mine (*c)) {
 
-                                /* port belongs to some other port-system client, use
-                                 * the port engine to lookup its latency information.
-                                 */
+				/* port belongs to some other port-system client, use
+				 * the port engine to lookup its latency information.
+				 */
 
 				PortEngine::PortHandle remote_port = port_engine.get_port_by_name (*c);
 
-                                if (remote_port) {
-                                        lr = port_engine.get_latency_range (remote_port, playback);
+				if (remote_port) {
+					lr = port_engine.get_latency_range (remote_port, playback);
+					if (externally_connected ()) {
+#if 0
+						lr.min /= _speed_ratio;
+						lr.max /= _speed_ratio;
+#endif
+						lr.min += (_resampler_quality - 1);
+						lr.max += (_resampler_quality - 1);
+					}
 
-                                        DEBUG_TRACE (DEBUG::Latency, string_compose (
-                                                             "\t%1 <-> %2 : latter has latency range %3 .. %4\n",
-                                                             name(), *c, lr.min, lr.max));
+					DEBUG_TRACE (DEBUG::Latency, string_compose (
+								"\t%1 <-> %2 : latter has latency range %3 .. %4\n",
+								name(), *c, lr.min, lr.max));
 
-                                        range.min = min (range.min, lr.min);
-                                        range.max = max (range.max, lr.max);
-                                }
+					range.min = min (range.min, lr.min);
+					range.max = max (range.max, lr.max);
+				}
 
 			} else {
 
-                                /* port belongs to this instance of ardour,
-                                   so look up its latency information
-                                   internally, because our published/public
-                                   values already contain our plugin
-                                   latency compensation.
-                                */
+				/* port belongs to this instance of ardour,
+					 so look up its latency information
+					 internally, because our published/public
+					 values already contain our plugin
+					 latency compensation.
+					 */
 
-                                boost::shared_ptr<Port> remote_port = AudioEngine::instance()->get_port_by_name (*c);
-                                if (remote_port) {
-                                        lr = remote_port->private_latency_range ((playback ? true : false));
-                                        DEBUG_TRACE (DEBUG::Latency, string_compose (
-                                                             "\t%1 <-LOCAL-> %2 : latter has latency range %3 .. %4\n",
-                                                             name(), *c, lr.min, lr.max));
+				boost::shared_ptr<Port> remote_port = AudioEngine::instance()->get_port_by_name (*c);
+				if (remote_port) {
+					lr = remote_port->private_latency_range ((playback ? true : false));
+					DEBUG_TRACE (DEBUG::Latency, string_compose (
+								"\t%1 <-LOCAL-> %2 : latter has latency range %3 .. %4\n",
+								name(), *c, lr.min, lr.max));
 
-                                        range.min = min (range.min, lr.min);
-                                        range.max = max (range.max, lr.max);
-                                }
-                        }
+					range.min = min (range.min, lr.min);
+					range.max = max (range.max, lr.max);
+				}
+			}
 		}
 
 	} else {
@@ -495,7 +514,7 @@ Port::get_connected_latency_range (LatencyRange& range, bool playback) const
 		range.max = 0;
 	}
 
-        DEBUG_TRACE (DEBUG::Latency, string_compose ("%1: final connected latency range [ %2 .. %3 ] \n", name(), range.min, range.max));
+	DEBUG_TRACE (DEBUG::Latency, string_compose ("%1: final connected latency range [ %2 .. %3 ] \n", name(), range.min, range.max));
 }
 
 int
@@ -564,6 +583,15 @@ Port::physically_connected () const
 	return port_engine.physically_connected (_port_handle);
 }
 
+bool
+Port::externally_connected () const
+{
+	if (!_port_handle) {
+		return false;
+	}
+	return port_engine.externally_connected (_port_handle);
+}
+
 XMLNode&
 Port::get_state () const
 {
@@ -620,4 +648,15 @@ Port::set_state (const XMLNode& node, int)
 	}
 
 	return 0;
+}
+
+/*static*/ void
+Port::set_speed_ratio (double s) {
+	/* see VMResampler::set_rratio() for min/max range */
+	_speed_ratio = std::min (16.0, std::max (0.5, s));
+}
+
+/*static*/ void
+Port::set_cycle_samplecnt (pframes_t n) {
+	_cycle_nframes = floor (n * _speed_ratio);
 }

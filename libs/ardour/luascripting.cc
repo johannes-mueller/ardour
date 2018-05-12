@@ -57,6 +57,7 @@ LuaScripting::LuaScripting ()
 	, _sl_action (0)
 	, _sl_snippet (0)
 	, _sl_setup (0)
+	, _sl_tracks (0)
 {
 	;
 }
@@ -71,6 +72,7 @@ LuaScripting::~LuaScripting ()
 		delete _sl_action;
 		delete _sl_snippet;
 		delete _sl_setup;
+		delete _sl_tracks;
 	}
 }
 
@@ -86,6 +88,7 @@ LuaScripting::refresh (bool run_scan)
 	delete _sl_action;
 	delete _sl_snippet;
 	delete _sl_setup;
+	delete _sl_tracks;
 
 	_sl_dsp = 0;
 	_sl_session = 0;
@@ -93,6 +96,7 @@ LuaScripting::refresh (bool run_scan)
 	_sl_action = 0;
 	_sl_snippet = 0;
 	_sl_setup = 0;
+	_sl_tracks = 0;
 
 	if (run_scan) {
 		lm.release ();
@@ -125,6 +129,7 @@ LuaScripting::scan ()
 	CLEAR_OR_NEW (_sl_action)
 	CLEAR_OR_NEW (_sl_snippet)
 	CLEAR_OR_NEW (_sl_setup)
+	CLEAR_OR_NEW (_sl_tracks)
 
 #undef CLEAR_OR_NEW
 
@@ -153,7 +158,7 @@ LuaScripting::scan ()
 			case LuaScriptInfo::Snippet:
 				_sl_snippet->push_back(lsi);
 				break;
-			case LuaScriptInfo::SessionSetup:
+			case LuaScriptInfo::SessionInit:
 				_sl_setup->push_back(lsi);
 				break;
 			default:
@@ -167,6 +172,7 @@ LuaScripting::scan ()
 	std::sort (_sl_action->begin(), _sl_action->end(), ScriptSorter());
 	std::sort (_sl_snippet->begin(), _sl_snippet->end(), ScriptSorter());
 	std::sort (_sl_setup->begin(), _sl_setup->end(), ScriptSorter());
+	std::sort (_sl_tracks->begin(), _sl_tracks->end(), ScriptSorter());
 
 	scripts_changed (); /* EMIT SIGNAL */
 }
@@ -277,13 +283,33 @@ LuaScripting::scan_script (const std::string &fn, const std::string &sc)
 		if (key == "description") { lsi->description = val; }
 		if (key == "category") { lsi->category = val; }
 	}
+
+
+	if (type == LuaScriptInfo::EditorAction) {
+
+		luabridge::LuaRef lua_rs = luabridge::getGlobal (L, "route_setup");
+		if (lua_rs.isFunction ()) {
+			lsi->subtype |= LuaScriptInfo::RouteSetup;
+		}
+
+		luabridge::LuaRef lua_ss = luabridge::getGlobal (L, "session_setup");
+		if (lua_ss.isFunction ()) {
+			try {
+				if (lua_ss () == true) {
+					lsi->subtype |= LuaScriptInfo::SessionSetup;
+				}
+			} catch (...) { }
+		}
+
+	}
+
 	return lsi;
 }
 
 LuaScriptList &
 LuaScripting::scripts (LuaScriptInfo::ScriptType type) {
 
-	if (!_sl_dsp || !_sl_session || !_sl_hook || !_sl_action || !_sl_snippet || ! _sl_setup) {
+	if (!_sl_dsp || !_sl_session || !_sl_hook || !_sl_action || !_sl_snippet || ! _sl_setup || ! _sl_tracks) {
 		scan ();
 	}
 
@@ -303,7 +329,7 @@ LuaScripting::scripts (LuaScriptInfo::ScriptType type) {
 		case LuaScriptInfo::Snippet:
 			return *_sl_snippet;
 			break;
-		case LuaScriptInfo::SessionSetup:
+		case LuaScriptInfo::SessionInit:
 			return *_sl_setup;
 			break;
 		default:
@@ -321,7 +347,7 @@ LuaScriptInfo::type2str (const ScriptType t) {
 		case LuaScriptInfo::EditorHook: return "EditorHook";
 		case LuaScriptInfo::EditorAction: return "EditorAction";
 		case LuaScriptInfo::Snippet: return "Snippet";
-		case LuaScriptInfo::SessionSetup: return "SessionSetup";
+		case LuaScriptInfo::SessionInit: return "SessionInit";
 		default: return "Invalid";
 	}
 }
@@ -334,7 +360,7 @@ LuaScriptInfo::str2type (const std::string& str) {
 	if (!strcasecmp (type, "EditorHook")) {return LuaScriptInfo::EditorHook;}
 	if (!strcasecmp (type, "EditorAction")) {return LuaScriptInfo::EditorAction;}
 	if (!strcasecmp (type, "Snippet")) {return LuaScriptInfo::Snippet;}
-	if (!strcasecmp (type, "SessionSetup")) {return LuaScriptInfo::SessionSetup;}
+	if (!strcasecmp (type, "SessionInit")) {return LuaScriptInfo::SessionInit;}
 	return LuaScriptInfo::Invalid;
 }
 
@@ -348,9 +374,15 @@ LuaScriptParams::script_params (const LuaScriptInfoPtr& lsi, const std::string &
 LuaScriptParamList
 LuaScriptParams::script_params (const std::string& s, const std::string &pname, bool file)
 {
+	LuaState lua;
+	return LuaScriptParams::script_params (lua, s, pname, file);
+}
+
+LuaScriptParamList
+LuaScriptParams::script_params (LuaState& lua, const std::string& s, const std::string &pname, bool file)
+{
 	LuaScriptParamList rv;
 
-	LuaState lua;
 	lua_State* L = lua.getState();
 	lua.sandbox (true);
 	lua.do_command ("function ardour () end");
@@ -361,7 +393,7 @@ LuaScriptParams::script_params (const std::string& s, const std::string &pname, 
 		} else {
 			lua.do_command (s);
 		}
-	} catch (luabridge::LuaException const& e) {
+	} catch (...) {
 		return rv;
 	}
 
@@ -378,6 +410,7 @@ LuaScriptParams::script_params (const std::string& s, const std::string &pname, 
 				std::string title = i.value ()["title"].cast<std::string> ();
 				std::string dflt;
 				bool optional = false;
+				bool preseeded = false;
 
 				if (i.value ()["default"].isString ()) {
 					dflt = i.value ()["default"].cast<std::string> ();
@@ -385,7 +418,10 @@ LuaScriptParams::script_params (const std::string& s, const std::string &pname, 
 				if (i.value ()["optional"].isBoolean ()) {
 					optional = i.value ()["optional"].cast<bool> ();
 				}
-				LuaScriptParamPtr lsspp (new LuaScriptParam(name, title, dflt, optional));
+				if (i.value ()["preseeded"].isBoolean ()) {
+					preseeded = i.value ()["preseeded"].cast<bool> ();
+				}
+				LuaScriptParamPtr lsspp (new LuaScriptParam(name, title, dflt, optional, preseeded));
 				rv.push_back (lsspp);
 			}
 		}
@@ -458,7 +494,7 @@ LuaScripting::try_compile (const std::string& script, const LuaScriptParamList& 
 		cerr << e.what() << "\n";
 #endif
 		lua_print (e.what());
-	}
+	} catch (...) { }
 
 	return false;
 }
@@ -489,7 +525,7 @@ LuaScripting::get_factory_bytecode (const std::string& script, const std::string
 		if (lua_factory.isFunction()) {
 			return (lua_dump(lua_factory)).cast<std::string> ();
 		}
-	} catch (luabridge::LuaException const& e) { }
+	} catch (...) { }
 	return "";
 }
 

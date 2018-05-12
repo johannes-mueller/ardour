@@ -111,14 +111,16 @@ LuaProc::LuaProc (const LuaProc &other)
 LuaProc::~LuaProc () {
 #ifdef WITH_LUAPROC_STATS
 	if (_info && _stats_cnt > 0) {
-		printf ("LuaProc: '%s' run()  avg: %.3f  max: %.3f [ms]\n",
+		printf ("LuaProc: '%s' run()  avg: %.3f  max: %.3f [ms] p: %.1f\n",
 				_info->name.c_str (),
 				0.0001f * _stats_avg[0] / (float) _stats_cnt,
-				0.0001f * _stats_max[0]);
-		printf ("LuaProc: '%s' gc()   avg: %.3f  max: %.3f [ms]\n",
+				0.0001f * _stats_max[0],
+				_stats_max[0] * (float)_stats_cnt / _stats_avg[0]);
+		printf ("LuaProc: '%s' gc()   avg: %.3f  max: %.3f [ms] p: %.1f\n",
 				_info->name.c_str (),
 				0.0001f * _stats_avg[1] / (float) _stats_cnt,
-				0.0001f * _stats_max[1]);
+				0.0001f * _stats_max[1],
+				_stats_max[1] * (float)_stats_cnt / _stats_avg[1]);
 	}
 #endif
 	lua.do_command ("collectgarbage();");
@@ -131,13 +133,14 @@ void
 LuaProc::init ()
 {
 #ifdef WITH_LUAPROC_STATS
-	_stats_avg[0] = _stats_avg[1] = _stats_max[0] = _stats_max[1] = _stats_cnt = 0;
+	_stats_avg[0] = _stats_avg[1] = _stats_max[0] = _stats_max[1] = 0;
+	_stats_cnt = -25;
 #endif
 
-	lua.tweak_rt_gc ();
 	lua.Print.connect (sigc::mem_fun (*this, &LuaProc::lua_print));
 	// register session object
 	lua_State* L = lua.getState ();
+	lua_mlock (L, 1);
 	LuaBindings::stddef (L);
 	LuaBindings::common (L);
 	LuaBindings::dsp (L);
@@ -153,6 +156,7 @@ LuaProc::init ()
 		.addFunction ("name", &LuaProc::name)
 		.endClass ()
 		.endNamespace ();
+	lua_mlock (L, 0);
 
 	// add session to global lua namespace
 	luabridge::push <Session *> (L, &_session);
@@ -236,10 +240,9 @@ LuaProc::load_script ()
 	luabridge::LuaRef lua_dsp_init = luabridge::getGlobal (L, "dsp_init");
 	if (lua_dsp_init.type () == LUA_TFUNCTION) {
 		try {
-			lua_dsp_init (_session.nominal_frame_rate ());
+			lua_dsp_init (_session.nominal_sample_rate ());
 		} catch (luabridge::LuaException const& e) {
-			;
-		}
+		} catch (...) { }
 	}
 
 	_ctrl_params.clear ();
@@ -353,6 +356,8 @@ LuaProc::can_support_io_configuration (const ChanCount& in, ChanCount& out, Chan
 				_iotable = new luabridge::LuaRef (iotable);
 			}
 		} catch (luabridge::LuaException const& e) {
+			_iotable = NULL;
+		} catch (...) {
 			_iotable = NULL;
 		}
 	}
@@ -584,6 +589,8 @@ LuaProc::configure_io (ChanCount in, ChanCount out)
 				std::cerr << "LuaException: " << e.what () << "\n";
 #endif
 				return false;
+			} catch (...) {
+				return false;
 			}
 		}
 	}
@@ -596,9 +603,9 @@ LuaProc::configure_io (ChanCount in, ChanCount out)
 
 int
 LuaProc::connect_and_run (BufferSet& bufs,
-		framepos_t start, framepos_t end, double speed,
+		samplepos_t start, samplepos_t end, double speed,
 		ChanMapping in, ChanMapping out,
-		pframes_t nframes, framecnt_t offset)
+		pframes_t nframes, samplecnt_t offset)
 {
 	if (!_lua_dsp) {
 		return 0;
@@ -670,7 +677,7 @@ LuaProc::connect_and_run (BufferSet& bufs,
 				if (valid) {
 					for (MidiBuffer::iterator m = bufs.get_midi(idx).begin();
 							m != bufs.get_midi(idx).end(); ++m, ++e) {
-						const Evoral::Event<framepos_t> ev(*m, false);
+						const Evoral::Event<samplepos_t> ev(*m, false);
 						luabridge::LuaRef lua_midi_data (luabridge::newTable (L));
 						const uint8_t* data = ev.buffer();
 						for (uint32_t i = 0; i < ev.size(); ++i) {
@@ -713,7 +720,7 @@ LuaProc::connect_and_run (BufferSet& bufs,
 						if (!i.value ()["time"].isNumber ()) { continue; }
 						if (!i.value ()["data"].isTable ()) { continue; }
 						luabridge::LuaRef data_tbl (i.value ()["data"]);
-						framepos_t tme = i.value ()["time"];
+						samplepos_t tme = i.value ()["time"];
 						if (tme < 1 || tme > nframes) { continue; }
 						uint8_t data[64];
 						size_t size = 0;
@@ -734,6 +741,8 @@ LuaProc::connect_and_run (BufferSet& bufs,
 		std::cerr << "LuaException: " << e.what () << "\n";
 #endif
 		return -1;
+	} catch (...) {
+		return -1;
 	}
 #ifdef WITH_LUAPROC_STATS
 	int64_t t1 = g_get_monotonic_time ();
@@ -741,14 +750,15 @@ LuaProc::connect_and_run (BufferSet& bufs,
 
 	lua.collect_garbage_step ();
 #ifdef WITH_LUAPROC_STATS
-	++_stats_cnt;
-	int64_t t2 = g_get_monotonic_time ();
-	int64_t ela0 = t1 - t0;
-	int64_t ela1 = t2 - t1;
-	if (ela0 > _stats_max[0]) _stats_max[0] = ela0;
-	if (ela1 > _stats_max[1]) _stats_max[1] = ela1;
-	_stats_avg[0] += ela0;
-	_stats_avg[1] += ela1;
+	if (++_stats_cnt > 0) {
+		int64_t t2 = g_get_monotonic_time ();
+		int64_t ela0 = t1 - t0;
+		int64_t ela1 = t2 - t1;
+		if (ela0 > _stats_max[0]) _stats_max[0] = ela0;
+		if (ela1 > _stats_max[1]) _stats_max[1] = ela1;
+		_stats_avg[0] += ela0;
+		_stats_avg[1] += ela1;
+	}
 #endif
 	return 0;
 }
@@ -1221,7 +1231,6 @@ LuaPluginInfo::LuaPluginInfo (LuaScriptInfoPtr lsi) {
 	n_outputs.set (DataType::AUDIO, 1);
 	type = Lua;
 
-	_is_instrument = category == "Instrument";
 }
 
 PluginPtr

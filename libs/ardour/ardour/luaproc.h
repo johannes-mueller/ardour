@@ -85,12 +85,12 @@ public:
 	void cleanup () { }
 
 	int set_block_size (pframes_t /*nframes*/) { return 0; }
-	framecnt_t  signal_latency() const { return 0; }
+	samplecnt_t  signal_latency() const { return 0; }
 
 	int connect_and_run (BufferSet& bufs,
-			framepos_t start, framepos_t end, double speed,
+			samplepos_t start, samplepos_t end, double speed,
 			ChanMapping in, ChanMapping out,
-			pframes_t nframes, framecnt_t offset);
+			pframes_t nframes, samplecnt_t offset);
 
 	std::string describe_parameter (Evoral::Parameter);
 	void        print_parameter (uint32_t, char*, uint32_t len) const;
@@ -208,13 +208,7 @@ class LIBARDOUR_API LuaPluginInfo : public PluginInfo
 	PluginPtr load (Session& session);
 	std::vector<Plugin::PresetRecord> get_presets (bool user_only) const;
 
-	bool in_category (const std::string &c) const {
-		return (category == c);
-	}
-	bool is_instrument () const { return _is_instrument; }
 	bool reconfigurable_io() const { return true; }
-
-	bool _is_instrument;
 };
 
 typedef boost::shared_ptr<LuaPluginInfo> LuaPluginInfoPtr;

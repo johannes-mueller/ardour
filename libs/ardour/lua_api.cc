@@ -343,7 +343,7 @@ ARDOUR::LuaAPI::sample_to_timecode_lua (lua_State *L)
 			sample, timecode, false, false,
 			s->timecode_frames_per_second (),
 			s->timecode_drop_frames (),
-			s->frame_rate (),
+			s->sample_rate (),
 			0, false, 0);
 
 	luabridge::Stack<uint32_t>::push (L, timecode.hours);
@@ -379,7 +379,7 @@ ARDOUR::LuaAPI::timecode_to_sample_lua (lua_State *L)
 
 	Timecode::timecode_to_sample (
 			timecode, sample, false, false,
-			s->frame_rate (),
+			s->sample_rate (),
 			0, false, 0);
 
 	luabridge::Stack<int64_t>::push (L, sample);
@@ -774,12 +774,12 @@ LuaAPI::Vamp::analyze (boost::shared_ptr<ARDOUR::Readable> r, uint32_t channel, 
 	float* data = new float[_bufsize];
 	float* bufs[1] = { data };
 
-	framecnt_t len = r->readable_length();
-	framepos_t pos = 0;
+	samplecnt_t len = r->readable_length();
+	samplepos_t pos = 0;
 
 	int rv = 0;
 	while (1) {
-		framecnt_t to_read = std::min ((len - pos), _bufsize);
+		samplecnt_t to_read = std::min ((len - pos), _bufsize);
 		if (r->read (data, pos, to_read, channel) != to_read) {
 			rv = -1;
 			break;
@@ -815,16 +815,16 @@ LuaAPI::Vamp::process (const std::vector<float*>& d, ::Vamp::RealTime rt)
 	return _plugin->process (bufs, rt);
 }
 
-boost::shared_ptr<Evoral::Note<Evoral::Beats> >
-LuaAPI::new_noteptr (uint8_t chan, Evoral::Beats beat_time, Evoral::Beats length, uint8_t note, uint8_t velocity)
+boost::shared_ptr<Evoral::Note<Temporal::Beats> >
+LuaAPI::new_noteptr (uint8_t chan, Temporal::Beats beat_time, Temporal::Beats length, uint8_t note, uint8_t velocity)
 {
-	return boost::shared_ptr<Evoral::Note<Evoral::Beats> > (new Evoral::Note<Evoral::Beats>(chan, beat_time, length, note, velocity));
+	return boost::shared_ptr<Evoral::Note<Temporal::Beats> > (new Evoral::Note<Temporal::Beats>(chan, beat_time, length, note, velocity));
 }
 
-std::list<boost::shared_ptr<Evoral::Note<Evoral::Beats> > >
+std::list<boost::shared_ptr<Evoral::Note<Temporal::Beats> > >
 LuaAPI::note_list (boost::shared_ptr<MidiModel> mm)
 {
-	typedef boost::shared_ptr<Evoral::Note<Evoral::Beats> > NotePtr;
+	typedef boost::shared_ptr<Evoral::Note<Temporal::Beats> > NotePtr;
 
 	std::list<NotePtr> note_ptr_list;
 

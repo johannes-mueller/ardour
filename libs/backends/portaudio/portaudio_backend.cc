@@ -31,11 +31,11 @@
 #include <glibmm.h>
 
 #include "portaudio_backend.h"
-#include "rt_thread.h"
 
 #include "pbd/compose.h"
 #include "pbd/error.h"
 #include "pbd/file_utils.h"
+#include "pbd/pthread_utils.h"
 #include "pbd/windows_timer_utils.h"
 #include "pbd/windows_mmcss.h"
 
@@ -716,7 +716,7 @@ PortAudioBackend::_start (bool for_latency_measurement)
 int
 PortAudioBackend::portaudio_callback(const void* input,
                                      void* output,
-                                     unsigned long frame_count,
+                                     unsigned long sample_count,
                                      const PaStreamCallbackTimeInfo* time_info,
                                      PaStreamCallbackFlags status_flags,
                                      void* user_data)
@@ -725,7 +725,7 @@ PortAudioBackend::portaudio_callback(const void* input,
 
 	if (!pa_backend->process_callback((const float*)input,
 	                                  (float*)output,
-	                                  frame_count,
+	                                  sample_count,
 	                                  time_info,
 	                                  status_flags)) {
 		return paAbort;
@@ -737,7 +737,7 @@ PortAudioBackend::portaudio_callback(const void* input,
 bool
 PortAudioBackend::process_callback(const float* input,
                                    float* output,
-                                   uint32_t frame_count,
+                                   uint32_t sample_count,
                                    const PaStreamCallbackTimeInfo* timeInfo,
                                    PaStreamCallbackFlags statusFlags)
 {
@@ -767,7 +767,7 @@ PortAudioBackend::process_callback(const float* input,
 	}
 
 	if (!_run || _freewheel) {
-		memset(output, 0, frame_count * sizeof(float) * _system_outputs.size());
+		memset(output, 0, sample_count * sizeof(float) * _system_outputs.size());
 		return true;
 	}
 
@@ -787,7 +787,7 @@ PortAudioBackend::process_callback(const float* input,
 bool
 PortAudioBackend::start_blocking_process_thread ()
 {
-	if (_realtime_pthread_create (SCHED_FIFO, -20, 100000,
+	if (pbd_realtime_pthread_create (PBD_SCHED_FIFO, -20, 100000,
 				&_main_blocking_thread, blocking_thread_func, this))
 	{
 		if (pthread_create (&_main_blocking_thread, NULL, blocking_thread_func, this))
@@ -1004,13 +1004,13 @@ PortAudioBackend::raw_buffer_size (DataType t)
 }
 
 /* Process time */
-framepos_t
+samplepos_t
 PortAudioBackend::sample_time ()
 {
 	return _processed_samples;
 }
 
-framepos_t
+samplepos_t
 PortAudioBackend::sample_time_at_cycle_start ()
 {
 	return _processed_samples;
@@ -1115,7 +1115,7 @@ PortAudioBackend::create_process_thread (boost::function<void()> func)
 
 	ThreadData* td = new ThreadData (this, func, stacksize);
 
-	if (_realtime_pthread_create (SCHED_FIFO, -22, stacksize,
+	if (pbd_realtime_pthread_create (PBD_SCHED_FIFO, -22, stacksize,
 				&thread_id, portaudio_process_thread, td)) {
 		pthread_attr_init (&attr);
 		pthread_attr_setstacksize (&attr, stacksize);
@@ -1497,6 +1497,24 @@ PortAudioBackend::unregister_ports (bool system_only)
 		} else {
 			++i;
 		}
+	}
+}
+
+void
+PortAudioBackend::update_system_port_latecies ()
+{
+	for (std::vector<PamPort*>::const_iterator it = _system_inputs.begin (); it != _system_inputs.end (); ++it) {
+		(*it)->update_connected_latency (true);
+	}
+	for (std::vector<PamPort*>::const_iterator it = _system_outputs.begin (); it != _system_outputs.end (); ++it) {
+		(*it)->update_connected_latency (false);
+	}
+
+	for (std::vector<PamPort*>::const_iterator it = _system_midi_in.begin (); it != _system_midi_in.end (); ++it) {
+		(*it)->update_connected_latency (true);
+	}
+	for (std::vector<PamPort*>::const_iterator it = _system_midi_out.begin (); it != _system_midi_out.end (); ++it) {
+		(*it)->update_connected_latency (false);
 	}
 }
 
@@ -2132,6 +2150,7 @@ PortAudioBackend::process_port_connection_changes ()
 		manager.graph_order_callback();
 	}
 	if (connections_changed || ports_changed) {
+		update_system_port_latecies ();
 		engine.latency_callback(false);
 		engine.latency_callback(true);
 	}
@@ -2320,6 +2339,36 @@ bool PamPort::is_physically_connected () const
 		}
 	}
 	return false;
+}
+
+void
+PamPort::set_latency_range (const LatencyRange &latency_range, bool for_playback)
+{
+	if (for_playback) {
+		_playback_latency_range = latency_range;
+	} else {
+		_capture_latency_range = latency_range;
+	}
+
+	for (std::vector<PamPort*>::const_iterator it = _connections.begin (); it != _connections.end (); ++it) {
+		if ((*it)->is_physical ()) {
+			(*it)->update_connected_latency (is_input ());
+		}
+	}
+}
+
+void
+PamPort::update_connected_latency (bool for_playback)
+{
+	LatencyRange lr;
+	lr.min = lr.max = 0;
+	for (std::vector<PamPort*>::const_iterator it = _connections.begin (); it != _connections.end (); ++it) {
+		LatencyRange l;
+		l = (*it)->latency_range (for_playback);
+		lr.min = std::max (lr.min, l.min);
+		lr.max = std::max (lr.max, l.max);
+	}
+	set_latency_range (lr, for_playback);
 }
 
 /******************************************************************************/

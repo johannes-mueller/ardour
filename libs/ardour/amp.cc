@@ -41,7 +41,7 @@ Amp::Amp (Session& s, const std::string& name, boost::shared_ptr<GainControl> gc
 	: Processor(s, "Amp")
 	, _apply_gain_automation(false)
 	, _current_gain(GAIN_COEFF_ZERO)
-	, _current_automation_frame (INT64_MAX)
+	, _current_automation_sample (INT64_MAX)
 	, _gain_control (gc)
 	, _gain_automation_buffer(0)
 	, _midi_amp (control_midi_also)
@@ -75,9 +75,11 @@ scale_midi_velocity(Evoral::Event<MidiBuffer::TimeType>& ev, float factor)
 }
 
 void
-Amp::run (BufferSet& bufs, framepos_t /*start_frame*/, framepos_t /*end_frame*/, double /*speed*/, pframes_t nframes, bool)
+Amp::run (BufferSet& bufs, samplepos_t /*start_sample*/, samplepos_t /*end_sample*/, double /*speed*/, pframes_t nframes, bool)
 {
 	if (!_active && !_pending_active) {
+		/* disregard potentially prepared gain-automation. */
+		_apply_gain_automation = false;
 		return;
 	}
 
@@ -102,7 +104,7 @@ Amp::run (BufferSet& bufs, framepos_t /*start_frame*/, framepos_t /*end_frame*/,
 			}
 		}
 
-		const gain_t a = 156.825f / (gain_t)_session.nominal_frame_rate(); // 25 Hz LPF; see Amp::apply_gain for details
+		const gain_t a = 156.825f / (gain_t)_session.nominal_sample_rate(); // 25 Hz LPF; see Amp::apply_gain for details
 		gain_t lpf = _current_gain;
 
 		for (BufferSet::audio_iterator i = bufs.audio_begin(); i != bufs.audio_end(); ++i) {
@@ -120,13 +122,18 @@ Amp::run (BufferSet& bufs, framepos_t /*start_frame*/, framepos_t /*end_frame*/,
 			_current_gain = lpf;
 		}
 
+		/* used it, don't do it again until setup_gain_automation() is
+		 * called successfully.
+		*/
+		_apply_gain_automation = false;
+
 	} else { /* manual (scalar) gain */
 
 		gain_t const target_gain = _gain_control->get_value();
 
 		if (fabsf (_current_gain - target_gain) >= GAIN_COEFF_DELTA) {
 
-			_current_gain = Amp::apply_gain (bufs, _session.nominal_frame_rate(), nframes, _current_gain, target_gain, _midi_amp);
+			_current_gain = Amp::apply_gain (bufs, _session.nominal_sample_rate(), nframes, _current_gain, target_gain, _midi_amp);
 
 			/* see note in PluginInsert::connect_and_run ()
 			 * set_value_unchecked() won't emit a signal since the value is effectively unchanged
@@ -165,7 +172,7 @@ Amp::run (BufferSet& bufs, framepos_t /*start_frame*/, framepos_t /*end_frame*/,
 }
 
 gain_t
-Amp::apply_gain (BufferSet& bufs, framecnt_t sample_rate, framecnt_t nframes, gain_t initial, gain_t target, bool midi_amp)
+Amp::apply_gain (BufferSet& bufs, samplecnt_t sample_rate, samplecnt_t nframes, gain_t initial, gain_t target, bool midi_amp)
 {
 	/** Apply a (potentially) declicked gain to the buffers of @a bufs */
 	gain_t rv = target;
@@ -231,13 +238,13 @@ Amp::apply_gain (BufferSet& bufs, framecnt_t sample_rate, framecnt_t nframes, ga
 }
 
 void
-Amp::declick (BufferSet& bufs, framecnt_t nframes, int dir)
+Amp::declick (BufferSet& bufs, samplecnt_t nframes, int dir)
 {
 	if (nframes == 0 || bufs.count().n_total() == 0) {
 		return;
 	}
 
-	const framecnt_t declick = std::min ((framecnt_t) 512, nframes);
+	const samplecnt_t declick = std::min ((samplecnt_t) 512, nframes);
 	const double     fractional_shift = 1.0 / declick ;
 	gain_t           delta, initial;
 
@@ -273,7 +280,7 @@ Amp::declick (BufferSet& bufs, framecnt_t nframes, int dir)
 
 
 gain_t
-Amp::apply_gain (AudioBuffer& buf, framecnt_t sample_rate, framecnt_t nframes, gain_t initial, gain_t target)
+Amp::apply_gain (AudioBuffer& buf, samplecnt_t sample_rate, samplecnt_t nframes, gain_t initial, gain_t target, sampleoffset_t offset)
 {
 	/* Apply a (potentially) declicked gain to the contents of @a buf
 	 * -- used by MonitorProcessor::run()
@@ -285,11 +292,11 @@ Amp::apply_gain (AudioBuffer& buf, framecnt_t sample_rate, framecnt_t nframes, g
 
 	// if we don't need to declick, defer to apply_simple_gain
 	if (initial == target) {
-		apply_simple_gain (buf, nframes, target);
+		apply_simple_gain (buf, nframes, target, offset);
 		return target;
 	}
 
-	Sample* const buffer = buf.data();
+	Sample* const buffer = buf.data (offset);
 	const gain_t a = 156.825f / (gain_t)sample_rate; // 25 Hz LPF, see [other] Amp::apply_gain() above for details
 
 	gain_t lpf = initial;
@@ -303,7 +310,7 @@ Amp::apply_gain (AudioBuffer& buf, framecnt_t sample_rate, framecnt_t nframes, g
 }
 
 void
-Amp::apply_simple_gain (BufferSet& bufs, framecnt_t nframes, gain_t target, bool midi_amp)
+Amp::apply_simple_gain (BufferSet& bufs, samplecnt_t nframes, gain_t target, bool midi_amp)
 {
 	if (fabsf (target) < GAIN_COEFF_SMALL) {
 
@@ -348,19 +355,19 @@ Amp::apply_simple_gain (BufferSet& bufs, framecnt_t nframes, gain_t target, bool
 }
 
 void
-Amp::apply_simple_gain (AudioBuffer& buf, framecnt_t nframes, gain_t target)
+Amp::apply_simple_gain (AudioBuffer& buf, samplecnt_t nframes, gain_t target, sampleoffset_t offset)
 {
 	if (fabsf (target) < GAIN_COEFF_SMALL) {
-		memset (buf.data(), 0, sizeof (Sample) * nframes);
+		memset (buf.data (offset), 0, sizeof (Sample) * nframes);
 	} else if (target != GAIN_COEFF_UNITY) {
-		apply_gain_to_buffer (buf.data(), nframes, target);
+		apply_gain_to_buffer (buf.data(offset), nframes, target);
 	}
 }
 
 XMLNode&
-Amp::state (bool full_state)
+Amp::state ()
 {
-	XMLNode& node (Processor::state (full_state));
+	XMLNode& node (Processor::state ());
 	node.set_property("type", _gain_control->parameter().type() == GainAutomation ? "amp" : "trim");
 	node.add_child_nocopy (_gain_control->get_state());
 
@@ -384,9 +391,12 @@ Amp::set_state (const XMLNode& node, int version)
 /** Write gain automation for this cycle into the buffer previously passed in to
  *  set_gain_automation_buffer (if we are in automation playback mode and the
  *  transport is rolling).
+ *
+ *  After calling this, the gain-automation buffer is valid for the next run.
+ *  so make sure to call ::run() which invalidates the buffer again.
  */
 void
-Amp::setup_gain_automation (framepos_t start_frame, framepos_t end_frame, framecnt_t nframes)
+Amp::setup_gain_automation (samplepos_t start_sample, samplepos_t end_sample, samplecnt_t nframes)
 {
 	Glib::Threads::Mutex::Lock am (control_lock(), Glib::Threads::TRY_LOCK);
 
@@ -396,15 +406,15 @@ Amp::setup_gain_automation (framepos_t start_frame, framepos_t end_frame, framec
 	{
 		assert (_gain_automation_buffer);
 
-		_apply_gain_automation = _gain_control->get_masters_curve ( start_frame, end_frame, _gain_automation_buffer, nframes);
+		_apply_gain_automation = _gain_control->get_masters_curve ( start_sample, end_sample, _gain_automation_buffer, nframes);
 
-		if (start_frame != _current_automation_frame && _session.bounce_processing ()) {
+		if (start_sample != _current_automation_sample && _session.bounce_processing ()) {
 			_current_gain = _gain_automation_buffer[0];
 		}
-		_current_automation_frame = end_frame;
+		_current_automation_sample = end_sample;
 	} else {
 		_apply_gain_automation = false;
-		_current_automation_frame = INT64_MAX;
+		_current_automation_sample = INT64_MAX;
 	}
 }
 

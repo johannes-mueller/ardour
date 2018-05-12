@@ -41,7 +41,7 @@
 using namespace ARDOUR;
 
 MiniTimeline::MiniTimeline ()
-	: _last_update_frame (-1)
+	: _last_update_sample (-1)
 	, _clock_mode (AudioClock::Timecode)
 	, _time_width (0)
 	, _time_height (0)
@@ -151,6 +151,7 @@ void
 MiniTimeline::set_colors ()
 {
 	// TODO  UIConfiguration::instance().color & font
+	_phead_color = UIConfiguration::instance().color ("play head");
 }
 
 void
@@ -180,7 +181,7 @@ MiniTimeline::on_size_allocate (Gtk::Allocation& alloc)
 }
 
 void
-MiniTimeline::set_span (framecnt_t ts)
+MiniTimeline::set_span (samplecnt_t ts)
 {
 	assert (_session);
 	if (_session->config.get_minitimeline_span () == ts) {
@@ -198,11 +199,11 @@ MiniTimeline::super_rapid_update ()
 	if (!_session || !_session->engine().running() || !is_mapped ()) {
 		return;
 	}
-	framepos_t const frame = PublicEditor::instance().playhead_cursor_sample ();
+	samplepos_t const sample = PublicEditor::instance().playhead_cursor_sample ();
 	AudioClock::Mode m = ARDOUR_UI::instance()->primary_clock->mode();
 
 	bool change = false;
-	if (fabs ((_last_update_frame - frame) * _px_per_sample) >= 1.0) {
+	if (fabs ((_last_update_sample - sample) * _px_per_sample) >= 1.0) {
 		change = true;
 	}
 
@@ -218,7 +219,7 @@ MiniTimeline::super_rapid_update ()
 	}
 
 	if (change) {
-		_last_update_frame = frame;
+		_last_update_sample = sample;
 		update_minitimeline ();
 	}
 }
@@ -242,7 +243,8 @@ MiniTimeline::calculate_time_width ()
 		case AudioClock::MinSec:
 			_layout->set_text ("88:88:88,88");
 			break;
-		case AudioClock::Frames:
+		case AudioClock::Seconds:
+		case AudioClock::Samples:
 			_layout->set_text ("8888888888");
 			break;
 	}
@@ -258,15 +260,15 @@ MiniTimeline::calculate_time_spacing ()
 		return;
 	}
 
-	const framecnt_t time_span = _session->config.get_minitimeline_span () / 2;
-	_time_span_samples = time_span * _session->nominal_frame_rate ();
-	_time_granularity = _session->nominal_frame_rate () * ceil (2. * time_span / _n_labels);
+	const samplecnt_t time_span = _session->config.get_minitimeline_span () / 2;
+	_time_span_samples = time_span * _session->nominal_sample_rate ();
+	_time_granularity = _session->nominal_sample_rate () * ceil (2. * time_span / _n_labels);
 	_px_per_sample = get_width () / (2. * _time_span_samples);
 	//_px_per_sample = 1.0 / round (1.0 / _px_per_sample);
 }
 
 void
-MiniTimeline::format_time (framepos_t when)
+MiniTimeline::format_time (samplepos_t when)
 {
 	switch (_clock_mode) {
 		case AudioClock::Timecode:
@@ -280,7 +282,7 @@ MiniTimeline::format_time (framepos_t when)
 		case AudioClock::BBT:
 			{
 				char buf[64];
-				Timecode::BBT_Time BBT = _session->tempo_map().bbt_at_frame (when);
+				Timecode::BBT_Time BBT = _session->tempo_map().bbt_at_sample (when);
 				snprintf (buf, sizeof (buf), "%03" PRIu32 BBT_BAR_CHAR "%02" PRIu32 BBT_BAR_CHAR "%04" PRIu32,
 						BBT.bars, BBT.beats, BBT.ticks);
 				_layout->set_text (buf);
@@ -289,11 +291,18 @@ MiniTimeline::format_time (framepos_t when)
 		case AudioClock::MinSec:
 			{
 				char buf[32];
-				AudioClock::print_minsec (when, buf, sizeof (buf), _session->frame_rate());
+				AudioClock::print_minsec (when, buf, sizeof (buf), _session->sample_rate());
 				_layout->set_text (std::string(buf).substr(1));
 			}
 			break;
-		case AudioClock::Frames:
+		case AudioClock::Seconds:
+			{
+				char buf[32];
+				snprintf (buf, sizeof (buf), "%.1f", when / (float)_session->sample_rate());
+				_layout->set_text (buf);
+			}
+			break;
+		case AudioClock::Samples:
 			{
 				char buf[32];
 				snprintf (buf, sizeof (buf), "%" PRId64, when);
@@ -475,10 +484,10 @@ MiniTimeline::draw_edge (cairo_t* cr, int x0, int x1, bool left, const std::stri
 
 
 struct LocationMarker {
-	LocationMarker (const std::string& l, framepos_t w)
+	LocationMarker (const std::string& l, samplepos_t w)
 		: label (l), when (w) {}
 	std::string label;
-	framepos_t  when;
+	samplepos_t  when;
 };
 
 struct LocationMarkerSort {
@@ -514,12 +523,12 @@ MiniTimeline::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_
 	}
 
 	/* time */
-	const framepos_t p = _last_update_frame;
-	const framepos_t lower = (std::max ((framepos_t)0, (p - _time_span_samples)) / _time_granularity) * _time_granularity;
+	const samplepos_t p = _last_update_sample;
+	const samplepos_t lower = (std::max ((samplepos_t)0, (p - _time_span_samples)) / _time_granularity) * _time_granularity;
 
 	int dot_left = width * .5 + (lower - p) * _px_per_sample;
 	for (int i = 0; i < 2 + _n_labels; ++i) {
-		framepos_t when = lower + i * _time_granularity;
+		samplepos_t when = lower + i * _time_granularity;
 		double xpos = width * .5 + (when - p) * _px_per_sample;
 
 		// TODO round to nearest display TC in +/- 1px
@@ -542,8 +551,8 @@ MiniTimeline::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_
 	draw_dots (cr, dot_left, width, height - PADDING - _time_height * .5, text);
 
 	/* locations */
-	framepos_t lmin = std::max ((framepos_t)0, (p - _time_span_samples));
-	framepos_t lmax = p + _time_span_samples;
+	samplepos_t lmin = std::max ((samplepos_t)0, (p - _time_span_samples));
+	samplepos_t lmax = p + _time_span_samples;
 
 	int tw, th;
 	_layout->set_text (X_("Marker@"));
@@ -585,7 +594,7 @@ MiniTimeline::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_
 	int id = 0;
 
 	for (std::vector<LocationMarker>::const_iterator l = lm.begin(); l != lm.end(); ++id) {
-		framepos_t when = (*l).when;
+		samplepos_t when = (*l).when;
 		if (when < lmin) {
 			outside_left = l;
 			if (++l != lm.end()) {
@@ -640,7 +649,8 @@ MiniTimeline::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_
 	/* playhead on top */
 	int xc = width * 0.5f;
 	cairo_set_line_width (cr, 1.0);
-	cairo_set_source_rgb (cr, 1, 0, 0); // playhead color
+	double r,g,b,a;  Gtkmm2ext::color_to_rgba(_phead_color, r,g,b,a);
+	cairo_set_source_rgb (cr, r,g,b); // playhead color
 	cairo_move_to (cr, xc - .5, 0);
 	cairo_rel_line_to (cr, 0, height);
 	cairo_stroke (cr);
@@ -660,13 +670,13 @@ MiniTimeline::build_minitl_context_menu ()
 
 	assert (_session);
 
-	const framecnt_t time_span = _session->config.get_minitimeline_span ();
+	const samplecnt_t time_span = _session->config.get_minitimeline_span ();
 
 	_minitl_context_menu = new Gtk::Menu();
 	MenuList& items = _minitl_context_menu->items();
 
 	// ideally this would have a heading (or rather be a sub-menu to "Visible Time")
-	std::map<framecnt_t, std::string> spans;
+	std::map<samplecnt_t, std::string> spans;
 	spans[30]   = _("30 sec");
 	spans[60]   = _("1 min");
 	spans[120]  = _("2 mins");
@@ -675,7 +685,7 @@ MiniTimeline::build_minitl_context_menu ()
 	spans[1200] = _("20 mins");
 
 	RadioMenuItem::Group span_group;
-	for (std::map<framecnt_t, std::string>::const_iterator i = spans.begin (); i != spans.end (); ++i) {
+	for (std::map<samplecnt_t, std::string>::const_iterator i = spans.begin (); i != spans.end (); ++i) {
 		items.push_back (RadioMenuElem (span_group, i->second, sigc::bind (sigc::mem_fun (*this, &MiniTimeline::set_span), i->first)));
 		if (time_span == i->first) {
 			static_cast<RadioMenuItem*>(&items.back())->set_active ();
@@ -717,8 +727,8 @@ MiniTimeline::on_button_release_event (GdkEventButton *ev)
 	}
 
 	if (ev->button == 1) {
-		framepos_t when = _last_update_frame + (ev->x - get_width() * .5) / _px_per_sample;
-		_session->request_locate (std::max ((framepos_t)0, when), _session->transport_rolling ());
+		samplepos_t when = _last_update_sample + (ev->x - get_width() * .5) / _px_per_sample;
+		_session->request_locate (std::max ((samplepos_t)0, when), _session->transport_rolling ());
 	}
 
 	return true;
@@ -774,8 +784,8 @@ MiniTimeline::on_scroll_event (GdkEventScroll *ev)
 {
 	if (!_session) { return true; }
 	if (_session->actively_recording ()) { return true; }
-	const framecnt_t time_span = _session->config.get_minitimeline_span ();
-	framepos_t when = _session->audible_frame ();
+	const samplecnt_t time_span = _session->config.get_minitimeline_span ();
+	samplepos_t when = _session->audible_sample ();
 
 	double scale = time_span / 60.0;
 
@@ -790,16 +800,16 @@ MiniTimeline::on_scroll_event (GdkEventScroll *ev)
 	switch (ev->direction) {
 		case GDK_SCROLL_UP:
 		case GDK_SCROLL_RIGHT:
-			when += scale * _session->nominal_frame_rate ();
+			when += scale * _session->nominal_sample_rate ();
 			break;
 		case GDK_SCROLL_DOWN:
 		case GDK_SCROLL_LEFT:
-			when -= scale * _session->nominal_frame_rate ();
+			when -= scale * _session->nominal_sample_rate ();
 			break;
 		default:
 			return true;
 			break;
 	}
-	_session->request_locate (std::max ((framepos_t)0, when), _session->transport_rolling ());
+	_session->request_locate (std::max ((samplepos_t)0, when), _session->transport_rolling ());
 	return true;
 }

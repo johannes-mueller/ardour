@@ -59,21 +59,27 @@
 #include "ardour/slavable.h"
 
 class RoutePinWindowProxy;
+class PatchChangeGridDialog;
 
 namespace ARDOUR {
 
 class Amp;
 class DelayLine;
 class Delivery;
+class DiskReader;
+class DiskWriter;
 class IOProcessor;
 class Panner;
 class PannerShell;
+class PolarityProcessor;
 class PortSet;
 class Processor;
 class PluginInsert;
 class RouteGroup;
 class Send;
 class InternalReturn;
+class Location;
+class MonitorControl;
 class MonitorProcessor;
 class Pannable;
 class CapturingProcessor;
@@ -99,6 +105,13 @@ public:
 
 	virtual int init ();
 
+	DataType data_type () const {
+		/* XXX ultimately nice to do away with this concept, but it is
+		   quite useful for coders and for users too.
+		*/
+		return _default_type;
+	}
+
 	boost::shared_ptr<IO> input() const { return _input; }
 	boost::shared_ptr<IO> output() const { return _output; }
 	IOVector all_inputs () const;
@@ -118,31 +131,35 @@ public:
 	bool set_name (const std::string& str);
 	static void set_name_in_state (XMLNode &, const std::string &, bool rename_playlist = true);
 
+	boost::shared_ptr<MonitorControl> monitoring_control() const { return _monitoring_control; }
+
 	MonitorState monitoring_state () const;
+	virtual MonitorState get_auto_monitoring_state () const { return MonitoringSilence; }
+
 	virtual MeterState metering_state () const;
 
 	/* these are the core of the API of a Route. see the protected sections as well */
 
-	virtual int roll (pframes_t nframes, framepos_t start_frame, framepos_t end_frame,
-	                  int declick, bool& need_butler);
+	virtual void filter_input (BufferSet &) {}
 
-	virtual int no_roll (pframes_t nframes, framepos_t start_frame, framepos_t end_frame,
-	                     bool state_changing);
+	int roll (pframes_t nframes, samplepos_t start_sample, samplepos_t end_sample, int declick, bool& need_butler);
 
-	virtual int silent_roll (pframes_t nframes, framepos_t start_frame, framepos_t end_frame,
-	                         bool& need_butler);
+	int no_roll (pframes_t nframes, samplepos_t start_sample, samplepos_t end_sample, bool state_changing);
+
+	int silent_roll (pframes_t nframes, samplepos_t start_sample, samplepos_t end_sample, bool& need_butler);
 
 	virtual bool can_record() { return false; }
 
-	virtual void non_realtime_transport_stop (framepos_t now, bool flush);
+	virtual void non_realtime_transport_stop (samplepos_t now, bool flush);
 	virtual void realtime_handle_transport_stopped () {}
 	virtual void realtime_locate () {}
-	virtual void non_realtime_locate (framepos_t);
+	virtual void non_realtime_locate (samplepos_t);
 	virtual void set_pending_declick (int);
+	void set_loop (ARDOUR::Location *);
 
 	/* end of vfunc-based API */
 
-	void shift (framepos_t, framecnt_t);
+	void shift (samplepos_t, samplecnt_t);
 
 	void set_trim (gain_t val, PBD::Controllable::GroupControlDisposition);
 
@@ -178,6 +195,9 @@ public:
 	void         set_meter_type (MeterType t) { _meter_type = t; }
 	MeterType    meter_type() const { return _meter_type; }
 
+	void set_disk_io_point (DiskIOPoint);
+	DiskIOPoint disk_io_point() const { return _disk_io_point; }
+
 	/* Processors */
 
 	boost::shared_ptr<Amp> amp() const  { return _amp; }
@@ -185,7 +205,6 @@ public:
 	boost::shared_ptr<PeakMeter>       peak_meter()       { return _meter; }
 	boost::shared_ptr<const PeakMeter> peak_meter() const { return _meter; }
 	boost::shared_ptr<PeakMeter> shared_peak_meter() const { return _meter; }
-	boost::shared_ptr<DelayLine> delay_line() const  { return _delayline; }
 
 	void flush_processors ();
 
@@ -219,6 +238,9 @@ public:
 
 	RoutePinWindowProxy * pinmgr_proxy () const { return _pinmgr_proxy; }
 	void set_pingmgr_proxy (RoutePinWindowProxy* wp) { _pinmgr_proxy = wp ; }
+
+	PatchChangeGridDialog* patch_selector_dialog () const { return _patch_selector_dialog; }
+	void set_patch_selector_dialog  (PatchChangeGridDialog* d) { _patch_selector_dialog = d; }
 
 	boost::shared_ptr<AutomationControl> automation_control_recurse (PBD::ID const & id) const;
 
@@ -320,19 +342,21 @@ public:
 	 */
 	bool remove_sidechain (boost::shared_ptr<Processor> proc) { return add_remove_sidechain (proc, false); }
 
-	framecnt_t set_private_port_latencies (bool playback) const;
-	void       set_public_port_latencies (framecnt_t, bool playback) const;
+	samplecnt_t  update_signal_latency (bool apply_to_delayline = false);
+	virtual void apply_latency_compensation ();
 
-	framecnt_t   update_signal_latency();
-	virtual void set_latency_compensation (framecnt_t);
+	samplecnt_t  set_private_port_latencies (bool playback) const;
+	void         set_public_port_latencies (samplecnt_t, bool playback) const;
 
-	void set_user_latency (framecnt_t);
-	framecnt_t initial_delay() const { return _initial_delay; }
-	framecnt_t signal_latency() const { return _signal_latency; }
+	void set_user_latency (samplecnt_t);
+	samplecnt_t signal_latency() const { return _signal_latency; }
+	samplecnt_t playback_latency (bool incl_downstream = false) const;
 
-	PBD::Signal0<void>       active_changed;
-	PBD::Signal0<void>       denormal_protection_changed;
-	PBD::Signal0<void>       comment_changed;
+	PBD::Signal0<void> active_changed;
+	PBD::Signal0<void> denormal_protection_changed;
+	PBD::Signal0<void> comment_changed;
+
+	bool is_track();
 
 	/** track numbers - assigned by session
 	 * nubers > 0 indicate tracks (audio+midi)
@@ -363,25 +387,27 @@ public:
 	PBD::Signal1<void,void*> record_enable_changed;
 	PBD::Signal0<void> processor_latency_changed;
 	/** the metering point has changed */
-	PBD::Signal0<void>       meter_change;
-	PBD::Signal0<void>       signal_latency_changed;
-	PBD::Signal0<void>       initial_delay_changed;
+	PBD::Signal0<void> meter_change;
+	/** a processor's latency has changed */
+	PBD::Signal0<void> signal_latency_changed;
+	/** route has updated its latency compensation */
+	PBD::Signal0<void> signal_latency_updated;
 
 	/** Emitted with the process lock held */
 	PBD::Signal0<void>       io_changed;
 
 	/* stateful */
-
 	XMLNode& get_state();
+	XMLNode& get_template();
 	virtual int set_state (const XMLNode&, int version);
-	virtual XMLNode& get_template();
 
 	XMLNode& get_processor_state ();
-	virtual void set_processor_state (const XMLNode&);
+	void set_processor_state (const XMLNode&);
+	virtual bool set_processor_state (XMLNode const & node, XMLProperty const* prop, ProcessorList& new_order, bool& must_configure);
 
 	boost::weak_ptr<Route> weakroute ();
 
-	int save_as_template (const std::string& path, const std::string& name);
+	int save_as_template (const std::string& path, const std::string& name, const std::string& description );
 
 	PBD::Signal1<void,void*> SelectedChanged;
 
@@ -457,13 +483,6 @@ public:
 		return _solo_safe_control;
 	}
 
-	boost::shared_ptr<MonitorControl> monitoring_control() const {
-		/* tracks override this to provide actual monitoring control;
-		   busses have no possible choices except input monitoring.
-		*/
-		return boost::shared_ptr<MonitorControl> ();
-	}
-
 	/* Route doesn't own these items, but sub-objects that it does own have them
 	   and to make UI code a bit simpler, we provide direct access to them
 	   here.
@@ -515,6 +534,7 @@ public:
 	boost::shared_ptr<AutomationControl> filter_slope_controllable (bool) const;
 	boost::shared_ptr<AutomationControl> filter_enable_controllable (bool) const;
 
+	boost::shared_ptr<AutomationControl> tape_drive_controllable () const;
 
 	/* "well-known" controls for a compressor in this route. Any or all may
 	 * be null.
@@ -545,6 +565,7 @@ public:
 	 */
 	boost::shared_ptr<AutomationControl> send_level_controllable (uint32_t n) const;
 	boost::shared_ptr<AutomationControl> send_enable_controllable (uint32_t n) const;
+	boost::shared_ptr<AutomationControl> send_pan_azi_controllable (uint32_t n) const;
 	/* for the same value of @param n, this returns the name of the send
 	 * associated with the pair of controllables returned by the above two methods.
 	 */
@@ -565,11 +586,13 @@ public:
 	/* can only be executed by a route for which is_monitor() is true
 	 *	 (i.e. the monitor out)
 	 */
-	void monitor_run (framepos_t start_frame, framepos_t end_frame,
+	void monitor_run (samplepos_t start_sample, samplepos_t end_sample,
 			pframes_t nframes, int declick);
 
 	bool slaved_to (boost::shared_ptr<VCA>) const;
 	bool slaved () const;
+
+	virtual void use_captured_sources (SourceList& srcs, CaptureInfos const &) {}
 
 protected:
 	friend class Session;
@@ -580,47 +603,48 @@ protected:
 	void curve_reallocate ();
 	virtual void set_block_size (pframes_t nframes);
 
-	virtual framecnt_t check_initial_delay (framecnt_t nframes, framepos_t&) { return nframes; }
+	virtual int no_roll_unlocked (pframes_t nframes, samplepos_t start_sample, samplepos_t end_sample, bool session_state_changing);
 
-	void fill_buffers_with_input (BufferSet& bufs, boost::shared_ptr<IO> io, pframes_t nframes);
+	virtual void snapshot_out_of_band_data (samplecnt_t /* nframes */) {}
+	virtual void write_out_of_band_data (BufferSet&, samplecnt_t /* nframes */) const {}
+	virtual void update_controls (BufferSet const&) {}
 
-	void passthru (BufferSet&, framepos_t start_frame, framepos_t end_frame, pframes_t nframes, int declick);
+	void process_output_buffers (BufferSet& bufs,
+	                             samplepos_t start_sample, samplepos_t end_sample,
+	                             pframes_t nframes, int declick,
+	                             bool gain_automation_ok,
+	                             bool run_disk_processors);
 
-	virtual void write_out_of_band_data (BufferSet& /* bufs */, framepos_t /* start_frame */, framepos_t /* end_frame */,
-					     framecnt_t /* nframes */) {}
-
-	virtual void process_output_buffers (BufferSet& bufs,
-	                                     framepos_t start_frame, framepos_t end_frame,
-	                                     pframes_t nframes, int declick,
-	                                     bool gain_automation_ok);
-
-	void flush_processor_buffers_locked (framecnt_t nframes);
+	void flush_processor_buffers_locked (samplecnt_t nframes);
 
 	virtual void bounce_process (BufferSet& bufs,
-	                             framepos_t start_frame, framecnt_t nframes,
+	                             samplepos_t start_sample, samplecnt_t nframes,
 															 boost::shared_ptr<Processor> endpoint, bool include_endpoint,
 	                             bool for_export, bool for_freeze);
 
-	framecnt_t   bounce_get_latency (boost::shared_ptr<Processor> endpoint, bool include_endpoint, bool for_export, bool for_freeze) const;
+	samplecnt_t  bounce_get_latency (boost::shared_ptr<Processor> endpoint, bool include_endpoint, bool for_export, bool for_freeze) const;
 	ChanCount    bounce_get_output_streams (ChanCount &cc, boost::shared_ptr<Processor> endpoint, bool include_endpoint, bool for_export, bool for_freeze) const;
 
-	boost::shared_ptr<IO> _input;
-	boost::shared_ptr<IO> _output;
-
 	bool           _active;
-	framecnt_t     _signal_latency;
-	framecnt_t     _signal_latency_at_amp_position;
-	framecnt_t     _signal_latency_at_trim_position;
-	framecnt_t     _initial_delay;
-	framecnt_t     _roll_delay;
+	samplecnt_t    _signal_latency;
 
 	ProcessorList  _processors;
-	mutable Glib::Threads::RWLock   _processor_lock;
-	boost::shared_ptr<Delivery> _main_outs;
-	boost::shared_ptr<InternalSend> _monitor_send;
-	boost::shared_ptr<InternalReturn> _intreturn;
+	mutable Glib::Threads::RWLock _processor_lock;
+
+	boost::shared_ptr<IO>               _input;
+	boost::shared_ptr<IO>               _output;
+
+	boost::shared_ptr<Delivery>         _main_outs;
+	boost::shared_ptr<InternalSend>     _monitor_send;
+	boost::shared_ptr<InternalReturn>   _intreturn;
 	boost::shared_ptr<MonitorProcessor> _monitor_control;
-	boost::shared_ptr<Pannable> _pannable;
+	boost::shared_ptr<Pannable>         _pannable;
+	boost::shared_ptr<DiskReader>       _disk_reader;
+	boost::shared_ptr<DiskWriter>       _disk_writer;
+
+	boost::shared_ptr<MonitorControl>   _monitoring_control;
+
+	DiskIOPoint _disk_io_point;
 
 	enum {
 		EmitNone = 0x00,
@@ -641,12 +665,10 @@ protected:
 	bool           _denormal_protection;
 
 	bool _recordable : 1;
-	bool _silent : 1;
 	bool _declickable : 1;
 
 	boost::shared_ptr<SoloControl> _solo_control;
 	boost::shared_ptr<MuteControl> _mute_control;
-	boost::shared_ptr<PhaseControl> _phase_control;
 	boost::shared_ptr<SoloIsolateControl> _solo_isolate_control;
 	boost::shared_ptr<SoloSafeControl> _solo_safe_control;
 
@@ -656,18 +678,16 @@ protected:
 	FedBy          _fed_by;
 
 	InstrumentInfo _instrument_info;
+	Location*      _loop_location;
 
 	virtual ChanCount input_streams () const;
 
-	virtual XMLNode& state(bool);
+	virtual XMLNode& state (bool save_template);
 
 	int configure_processors (ProcessorStreams*);
 
-	void passthru_silence (framepos_t start_frame, framepos_t end_frame,
-	                       pframes_t nframes, int declick);
-
-	void silence (framecnt_t);
-	void silence_unlocked (framecnt_t);
+	void silence (samplecnt_t);
+	void silence_unlocked (samplecnt_t);
 
 	ChanCount processor_max_streams;
 	ChanCount processor_out_streams;
@@ -675,21 +695,27 @@ protected:
 	uint32_t pans_required() const;
 	ChanCount n_process_buffers ();
 
-	virtual void maybe_declick (BufferSet&, framecnt_t, int);
+	virtual void maybe_declick (BufferSet&, samplecnt_t, int);
 
-	boost::shared_ptr<GainControl> _gain_control;
-	boost::shared_ptr<Amp>       _amp;
-	boost::shared_ptr<GainControl> _trim_control;
-	boost::shared_ptr<Amp>       _trim;
-	boost::shared_ptr<PeakMeter> _meter;
+	boost::shared_ptr<GainControl>  _gain_control;
+	boost::shared_ptr<GainControl>  _trim_control;
+	boost::shared_ptr<PhaseControl> _phase_control;
+	boost::shared_ptr<Amp>               _amp;
+	boost::shared_ptr<Amp>               _trim;
+	boost::shared_ptr<PeakMeter>         _meter;
+	boost::shared_ptr<PolarityProcessor> _polarity;
+
 	boost::shared_ptr<DelayLine> _delayline;
+
+	bool is_internal_processor (boost::shared_ptr<Processor>) const;
 
 	boost::shared_ptr<Processor> the_instrument_unlocked() const;
 
 	SlavableControlList slavables () const;
 
 private:
-	int64_t _track_number;
+	/* no copy construction */
+	Route (Route const &);
 
 	int set_state_2X (const XMLNode&, int);
 	void set_processor_state_2X (XMLNodeList const &, int);
@@ -705,10 +731,6 @@ private:
 	bool input_port_count_changing (ChanCount);
 	bool output_port_count_changing (ChanCount);
 
-	bool _in_configure_processors;
-	bool _initial_io_setup;
-	bool _in_sidechain_setup;
-
 	int configure_processors_unlocked (ProcessorStreams*, Glib::Threads::RWLock::WriterLock*);
 	bool set_meter_point_unlocked ();
 	void apply_processor_order (const ProcessorList& new_order);
@@ -721,16 +743,23 @@ private:
 	void placement_range (Placement p, ProcessorList::iterator& start, ProcessorList::iterator& end);
 
 	void set_self_solo (bool yn);
-
-	void set_processor_positions ();
-	framecnt_t update_port_latencies (PortSet& ports, PortSet& feeders, bool playback, framecnt_t) const;
-
-	void setup_invisible_processors ();
 	void unpan ();
 
-	void set_plugin_state_dir (boost::weak_ptr<Processor>, const std::string&);
+	void set_processor_positions ();
+	samplecnt_t update_port_latencies (PortSet& ports, PortSet& feeders, bool playback, samplecnt_t) const;
 
-	boost::shared_ptr<CapturingProcessor> _capturing_processor;
+	void setup_invisible_processors ();
+
+	pframes_t latency_preroll (pframes_t nframes, samplepos_t& start_sample, samplepos_t& end_sample);
+
+	void run_route (samplepos_t start_sample, samplepos_t end_sample, pframes_t nframes, int declick, bool gain_automation_ok, bool run_disk_reader);
+	void fill_buffers_with_input (BufferSet& bufs, boost::shared_ptr<IO> io, pframes_t nframes);
+
+	void reset_instrument_info ();
+	void solo_control_changed (bool self, PBD::Controllable::GroupControlDisposition);
+	void maybe_note_meter_position ();
+
+	void set_plugin_state_dir (boost::weak_ptr<Processor>, const std::string&);
 
 	/** A handy class to keep processor state while we attempt a reconfiguration
 	 *  that may fail.
@@ -759,12 +788,13 @@ private:
 
 	friend class ProcessorState;
 
-	bool _strict_io;
+	boost::shared_ptr<CapturingProcessor> _capturing_processor;
 
-	/* no copy construction */
-	Route (Route const &);
-
-	void maybe_note_meter_position ();
+	int64_t _track_number;
+	bool    _strict_io;
+	bool    _in_configure_processors;
+	bool    _initial_io_setup;
+	bool    _in_sidechain_setup;
 
 	/** true if we've made a note of a custom meter position in these variables */
 	bool _custom_meter_position_noted;
@@ -772,11 +802,9 @@ private:
 	    or 0.
 	*/
 	boost::weak_ptr<Processor> _processor_after_last_custom_meter;
-	RoutePinWindowProxy *_pinmgr_proxy;
 
-	void reset_instrument_info ();
-
-	void solo_control_changed (bool self, PBD::Controllable::GroupControlDisposition);
+	RoutePinWindowProxy*   _pinmgr_proxy;
+	PatchChangeGridDialog* _patch_selector_dialog;
 };
 
 } // namespace ARDOUR

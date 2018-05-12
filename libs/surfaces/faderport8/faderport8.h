@@ -53,7 +53,7 @@ namespace ARDOUR {
 	class PluginInsert;
 }
 
-namespace ArdourSurface {
+namespace ArdourSurface { namespace FP_NAMESPACE {
 
 struct FaderPort8Request : public BaseUI::BaseRequestObject
 {
@@ -228,6 +228,8 @@ private:
 	std::string const& timecode () const { return _timecode; }
 	std::string const& musical_time () const { return _musical_time; }
 
+	int _timer_divider;
+
 	bool show_meters () const { return _scribble_mode & 1; }
 	bool show_panner () const { return _scribble_mode & 2; }
 
@@ -399,6 +401,6 @@ private:
 	UserActionMap _user_action_map;
 };
 
-} /* namespace */
+} } /* namespace */
 
 #endif /* ardour_surface_faderport8_h */

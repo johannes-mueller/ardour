@@ -132,7 +132,7 @@ ARDOUR_UI::connect_dependents_to_session (ARDOUR::Session *s)
 gint
 ARDOUR_UI::exit_on_main_window_close (GdkEventAny * /*ev*/)
 {
-#ifdef TOP_MENUBAR
+#ifdef __APPLE__
 	/* just hide the window, and return - the top menu stays up */
 	editor->hide ();
 	return TRUE;
@@ -276,34 +276,19 @@ ARDOUR_UI::setup_windows ()
 
 	we_have_dependents ();
 
-#ifdef TOP_MENUBAR
-	EventBox* status_bar_event_box = manage (new EventBox);
-
-	status_bar_event_box->add (status_bar_label);
-	status_bar_event_box->add_events (Gdk::BUTTON_PRESS_MASK|Gdk::BUTTON_RELEASE_MASK);
-	status_bar_label.set_size_request (300, -1);
-
-	status_bar_label.show ();
-	status_bar_event_box->show ();
-
-	status_bar_event_box->signal_button_press_event().connect (mem_fun (*this, &ARDOUR_UI::status_bar_button_press));
-
-	status_bar_hpacker.pack_start (*status_bar_event_box, true, true, 6);
-	status_bar_hpacker.pack_start (menu_bar_base, false, false, 2);
-#else
 	top_packer.pack_start (menu_bar_base, false, false);
-#endif
 
 	main_vpacker.pack_start (top_packer, false, false);
 
-	/* now add the transport frame to the top of main window */
+	ArdourWidgets::ArdourDropShadow *spacer = manage (new (ArdourWidgets::ArdourDropShadow));
+	spacer->set_size_request( -1, 4 );
+	spacer->show();
 
+	/* now add the transport sample to the top of main window */
+
+	main_vpacker.pack_start ( *spacer, false, false);
 	main_vpacker.pack_start (transport_frame, false, false);
 	main_vpacker.pack_start (_tabs, true, true);
-
-#ifdef TOP_MENUBAR
-	main_vpacker.pack_start (status_bar_hpacker, false, false);
-#endif
 
 	LuaInstance::instance()->ActionChanged.connect (sigc::mem_fun (*this, &ARDOUR_UI::update_action_script_btn));
 

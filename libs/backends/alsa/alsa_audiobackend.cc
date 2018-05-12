@@ -23,12 +23,17 @@
 
 #include <glibmm.h>
 
+#include <boost/foreach.hpp>
+#include <boost/tokenizer.hpp>
+
 #include "alsa_audiobackend.h"
-#include "rt_thread.h"
 
 #include "pbd/compose.h"
+#include "pbd/convert.h"
 #include "pbd/error.h"
 #include "pbd/file_utils.h"
+#include "pbd/pthread_utils.h"
+
 #include "ardour/filesystem_paths.h"
 #include "ardour/port_manager.h"
 #include "ardouralsautil/devicelist.h"
@@ -59,7 +64,6 @@ AlsaAudioBackend::AlsaAudioBackend (AudioEngine& e, AudioBackendInfo& info)
 	, _input_audio_device("")
 	, _output_audio_device("")
 	, _midi_driver_option(get_standard_device_name(DeviceNone))
-	, _device_reservation(0)
 	, _samplerate (48000)
 	, _samples_per_period (1024)
 	, _periods_per_cycle (2)
@@ -140,83 +144,6 @@ AlsaAudioBackend::enumerate_output_devices () const
 		_output_audio_device_status.push_back (DeviceStatus (i->first, true));
 	}
 	return _output_audio_device_status;
-}
-
-void
-AlsaAudioBackend::reservation_stdout (std::string d, size_t /* s */)
-{
-  if (d.substr(0, 19) == "Acquired audio-card") {
-		_reservation_succeeded = true;
-	}
-}
-
-void
-AlsaAudioBackend::release_device()
-{
-	_reservation_connection.drop_connections();
-	ARDOUR::SystemExec * tmp = _device_reservation;
-	_device_reservation = 0;
-	delete tmp;
-}
-
-bool
-AlsaAudioBackend::acquire_device(const char* device_name)
-{
-	/* This is  quick hack, ideally we'll link against libdbus and implement a dbus-listener
-	 * that owns the device. here we try to get away by just requesting it and then block it...
-	 * (pulseaudio periodically checks anyway)
-	 *
-	 * dbus-send --session --print-reply --type=method_call --dest=org.freedesktop.ReserveDevice1.Audio2 /org/freedesktop/ReserveDevice1/Audio2 org.freedesktop.ReserveDevice1.RequestRelease int32:4
-	 * -> should not return  'boolean false'
-	 */
-	int device_number = card_to_num(device_name);
-	if (device_number < 0) return false;
-
-	assert(_device_reservation == 0);
-	_reservation_succeeded = false;
-
-	std::string request_device_exe;
-	if (!PBD::find_file (
-				PBD::Searchpath(Glib::build_filename(ARDOUR::ardour_dll_directory(), "ardouralsautil")
-					+ G_SEARCHPATH_SEPARATOR_S + ARDOUR::ardour_dll_directory()),
-				"ardour-request-device", request_device_exe))
-	{
-		PBD::warning << "ardour-request-device binary was not found..'" << endmsg;
-		return false;
-	}
-	else
-	{
-		char **argp;
-		char tmp[128];
-		argp=(char**) calloc(5,sizeof(char*));
-		argp[0] = strdup(request_device_exe.c_str());
-		argp[1] = strdup("-P");
-		snprintf(tmp, sizeof(tmp), "%d", getpid());
-		argp[2] = strdup(tmp);
-		snprintf(tmp, sizeof(tmp), "Audio%d", device_number);
-		argp[3] = strdup(tmp);
-		argp[4] = 0;
-
-		_device_reservation = new ARDOUR::SystemExec(request_device_exe, argp);
-		_device_reservation->ReadStdout.connect_same_thread (_reservation_connection, boost::bind (&AlsaAudioBackend::reservation_stdout, this, _1 ,_2));
-		_device_reservation->Terminated.connect_same_thread (_reservation_connection, boost::bind (&AlsaAudioBackend::release_device, this));
-		if (_device_reservation->start(0)) {
-			PBD::warning << _("AlsaAudioBackend: Device Request failed.") << endmsg;
-			release_device();
-			return false;
-		}
-	}
-	// wait to check if reservation suceeded.
-	int timeout = 500; // 5 sec
-	while (_device_reservation && !_reservation_succeeded && --timeout > 0) {
-		Glib::usleep(10000);
-	}
-	if (timeout == 0 || !_reservation_succeeded) {
-		PBD::warning << _("AlsaAudioBackend: Device Reservation failed.") << endmsg;
-		release_device();
-		return false;
-	}
-	return true;
 }
 
 std::vector<float>
@@ -746,6 +673,11 @@ AlsaAudioBackend::set_midi_device_enabled (std::string const device, bool enable
 	nfo->enabled = enable;
 
 	if (_run && prev_enabled != enable) {
+		// XXX actually we should not change system-ports while running,
+		// because iterators in main_process_thread will become invalid.
+		//
+		// Luckily the engine dialog does not call this while the engine is running,
+		// This code is currently not used.
 		if (enable) {
 			// add ports for the given device
 			register_system_midi_ports(device);
@@ -834,7 +766,7 @@ AlsaAudioBackend::_start (bool for_latency_measurement)
 	_freewheel = false;
 	_last_process_start = 0;
 
-	release_device();
+	_device_reservation.release_device();
 
 	assert(_rmidi_in.size() == 0);
 	assert(_rmidi_out.size() == 0);
@@ -881,7 +813,7 @@ AlsaAudioBackend::_start (bool for_latency_measurement)
 		return AudioDeviceNotAvailableError;
 	}
 
-	acquire_device(alsa_device.c_str());
+	_device_reservation.acquire_device(alsa_device.c_str());
 	_pcmi = new Alsa_pcmi (
 			(duplex & 2) ? alsa_device.c_str() : NULL,
 			(duplex & 1) ? alsa_device.c_str() : NULL,
@@ -929,7 +861,7 @@ AlsaAudioBackend::_start (bool for_latency_measurement)
 
 	if (_pcmi->state ()) {
 		delete _pcmi; _pcmi = 0;
-		release_device();
+		_device_reservation.release_device();
 		return error_code;
 	}
 
@@ -974,7 +906,7 @@ AlsaAudioBackend::_start (bool for_latency_measurement)
 	if (register_system_audio_ports()) {
 		PBD::error << _("AlsaAudioBackend: failed to register system ports.") << endmsg;
 		delete _pcmi; _pcmi = 0;
-		release_device();
+		_device_reservation.release_device();
 		return PortRegistrationError;
 	}
 
@@ -984,7 +916,7 @@ AlsaAudioBackend::_start (bool for_latency_measurement)
 	if (engine.reestablish_ports ()) {
 		PBD::error << _("AlsaAudioBackend: Could not re-establish ports.") << endmsg;
 		delete _pcmi; _pcmi = 0;
-		release_device();
+		_device_reservation.release_device();
 		return PortReconnectError;
 	}
 
@@ -992,14 +924,14 @@ AlsaAudioBackend::_start (bool for_latency_measurement)
 	_run = true;
 	_port_change_flag = false;
 
-	if (_realtime_pthread_create (SCHED_FIFO, -20, 100000,
+	if (pbd_realtime_pthread_create (PBD_SCHED_FIFO, -20, 100000,
 				&_main_thread, pthread_process, this))
 	{
 		if (pthread_create (&_main_thread, NULL, pthread_process, this))
 		{
 			PBD::error << _("AlsaAudioBackend: failed to create process thread.") << endmsg;
 			delete _pcmi; _pcmi = 0;
-			release_device();
+			_device_reservation.release_device();
 			_run = false;
 			return ProcessThreadStartError;
 		} else {
@@ -1013,10 +945,38 @@ AlsaAudioBackend::_start (bool for_latency_measurement)
 	if (timeout == 0 || !_active) {
 		PBD::error << _("AlsaAudioBackend: failed to start process thread.") << endmsg;
 		delete _pcmi; _pcmi = 0;
-		release_device();
+		_device_reservation.release_device();
 		_run = false;
 		return ProcessThreadStartError;
 	}
+
+#if 1
+	if (NULL != getenv ("ALSAEXT")) {
+		boost::char_separator<char> sep (";");
+		boost::tokenizer<boost::char_separator<char> > devs (std::string(getenv ("ALSAEXT")), sep);
+		BOOST_FOREACH (const std::string& tmp, devs) {
+			std::string dev (tmp);
+			std::string::size_type n = dev.find ('@');
+			unsigned int sr = _samplerate;
+			unsigned int spp = _samples_per_period;
+			unsigned int duplex = 3; // TODO parse 1: play, 2: capt, 3:both
+			if (n != std::string::npos) {
+				std::string opt (dev.substr (n + 1));
+				sr = PBD::atoi (opt);
+				dev = dev.substr (0, n);
+				std::string::size_type n = opt.find ('/');
+				if (n != std::string::npos) {
+					spp = PBD::atoi (opt.substr (n + 1));
+				}
+			}
+			if (add_slave (dev.c_str(), sr, spp, duplex)) {
+				PBD::info << string_compose (_("ALSA slave '%1' added"), dev) << endmsg;
+			} else {
+				PBD::error << string_compose (_("ALSA failed to add '%1' as slave"), dev) << endmsg;
+			}
+		}
+	}
+#endif
 
 	return NoError;
 }
@@ -1048,10 +1008,16 @@ AlsaAudioBackend::stop ()
 		delete m;
 	}
 
+	while (!_slaves.empty ()) {
+		AudioSlave* s = _slaves.back ();
+		_slaves.pop_back ();
+		delete s;
+	}
+
 	unregister_ports();
 	delete _pcmi; _pcmi = 0;
 	_midi_ins = _midi_outs = 0;
-	release_device();
+	_device_reservation.release_device();
 	_measure_latency = false;
 
 	return (_active == false) ? 0 : -1;
@@ -1083,13 +1049,13 @@ AlsaAudioBackend::raw_buffer_size (DataType t)
 }
 
 /* Process time */
-framepos_t
+samplepos_t
 AlsaAudioBackend::sample_time ()
 {
 	return _processed_samples;
 }
 
-framepos_t
+samplepos_t
 AlsaAudioBackend::sample_time_at_cycle_start ()
 {
 	return _processed_samples;
@@ -1129,7 +1095,7 @@ AlsaAudioBackend::create_process_thread (boost::function<void()> func)
 
 	ThreadData* td = new ThreadData (this, func, stacksize);
 
-	if (_realtime_pthread_create (SCHED_FIFO, -22, stacksize,
+	if (pbd_realtime_pthread_create (PBD_SCHED_FIFO, -22, stacksize,
 				&thread_id, alsa_process_thread, td)) {
 		pthread_attr_init (&attr);
 		pthread_attr_setstacksize (&attr, stacksize);
@@ -1418,6 +1384,39 @@ AlsaAudioBackend::register_system_audio_ports()
 		_system_outputs.push_back (ap);
 	}
 	return 0;
+}
+
+/* set playback-latency for _system_inputs
+ * and capture-latency for _system_outputs
+ */
+void
+AlsaAudioBackend::update_system_port_latecies ()
+{
+	for (std::vector<AlsaPort*>::const_iterator it = _system_inputs.begin (); it != _system_inputs.end (); ++it) {
+		(*it)->update_connected_latency (true);
+	}
+	for (std::vector<AlsaPort*>::const_iterator it = _system_outputs.begin (); it != _system_outputs.end (); ++it) {
+		(*it)->update_connected_latency (false);
+	}
+
+	for (std::vector<AlsaPort*>::const_iterator it = _system_midi_in.begin (); it != _system_midi_in.end (); ++it) {
+		(*it)->update_connected_latency (true);
+	}
+	for (std::vector<AlsaPort*>::const_iterator it = _system_midi_out.begin (); it != _system_midi_out.end (); ++it) {
+		(*it)->update_connected_latency (false);
+	}
+
+	for (AudioSlaves::iterator s = _slaves.begin (); s != _slaves.end (); ++s) {
+		if ((*s)->dead) {
+			continue;
+		}
+		for (std::vector<AlsaPort*>::const_iterator it = (*s)->inputs.begin (); it != (*s)->inputs.end (); ++it) {
+			(*it)->update_connected_latency (true);
+		}
+		for (std::vector<AlsaPort*>::const_iterator it = (*s)->outputs.begin (); it != (*s)->outputs.end (); ++it) {
+			(*it)->update_connected_latency (false);
+		}
+	}
 }
 
 /* libs/ardouralsautil/devicelist.cc appends either of
@@ -1897,7 +1896,13 @@ AlsaAudioBackend::main_process_thread ()
 {
 	AudioEngine::thread_init_callback (this);
 	_active = true;
+	bool reset_dll = true;
+	int last_n_periods = 0;
 	_processed_samples = 0;
+
+	double dll_dt = (double) _samples_per_period / (double) _samplerate;
+	double dll_w1 = 2 * M_PI * 0.1 * dll_dt;
+	double dll_w2 = dll_w1 * dll_w1;
 
 	uint64_t clock1;
 	_pcmi->pcm_start ();
@@ -1907,17 +1912,69 @@ AlsaAudioBackend::main_process_thread ()
 	manager.registration_callback();
 	manager.graph_order_callback();
 
+	const double sr_norm = 1e-6 * (double) _samplerate / (double)_samples_per_period;
+
 	while (_run) {
 		long nr;
 		bool xrun = false;
+		bool drain_slaves = false;
 
 		if (_freewheeling != _freewheel) {
 			_freewheel = _freewheeling;
 			engine.freewheel_callback (_freewheel);
+			for (AudioSlaves::iterator s = _slaves.begin (); s != _slaves.end (); ++s) {
+				(*s)->freewheel (_freewheel);
+			}
+			if (!_freewheel) {
+				_pcmi->pcm_stop ();
+				_pcmi->pcm_start ();
+				drain_slaves = true;
+			}
 		}
 
 		if (!_freewheel) {
 			nr = _pcmi->pcm_wait ();
+
+			/* update DLL */
+			uint64_t clock0 = g_get_monotonic_time();
+			if (reset_dll || last_n_periods != 1) {
+				reset_dll = false;
+				drain_slaves = true;
+				dll_dt = 1e6 * (double) _samples_per_period / (double)_samplerate;
+				_t0 = clock0;
+				_t1 = clock0 + dll_dt;
+			} else {
+				const double er = clock0 - _t1;
+				_t0 = _t1;
+				_t1 = _t1 + dll_w1 * er + dll_dt;
+				dll_dt += dll_w2 * er;
+			}
+
+			for (AudioSlaves::iterator s = _slaves.begin (); s != _slaves.end (); ++s) {
+				if ((*s)->dead) {
+					continue;
+				}
+				if ((*s)->halt) {
+					/* slave died, unregister its ports (not rt-safe, but no matter) */
+					PBD::error << _("ALSA Slave device halted") << endmsg;
+					for (std::vector<AlsaPort*>::const_iterator it = (*s)->inputs.begin (); it != (*s)->inputs.end (); ++it) {
+						unregister_port (*it);
+					}
+					for (std::vector<AlsaPort*>::const_iterator it = (*s)->outputs.begin (); it != (*s)->outputs.end (); ++it) {
+						unregister_port (*it);
+					}
+					(*s)->inputs.clear ();
+					(*s)->outputs.clear ();
+					(*s)->active = false;
+					(*s)->dead = true;
+					continue;
+				}
+				(*s)->active = (*s)->running () && (*s)->state () >= 0;
+				if (!(*s)->active) {
+					continue;
+				}
+				(*s)->cycle_start (_t0, (_t1 - _t0) * sr_norm, drain_slaves);
+			}
 
 			if (_pcmi->state () > 0) {
 				++no_proc_errors;
@@ -1936,6 +1993,7 @@ AlsaAudioBackend::main_process_thread ()
 				break;
 			}
 
+			last_n_periods = 0;
 			while (nr >= (long)_samples_per_period && _freewheeling == _freewheel) {
 				uint32_t i = 0;
 				clock1 = g_get_monotonic_time();
@@ -1946,6 +2004,16 @@ AlsaAudioBackend::main_process_thread ()
 					_pcmi->capt_chan (i, (float*)((*it)->get_buffer(_samples_per_period)), _samples_per_period);
 				}
 				_pcmi->capt_done (_samples_per_period);
+
+				for (AudioSlaves::iterator s = _slaves.begin (); s != _slaves.end (); ++s) {
+					if (!(*s)->active) {
+						continue;
+					}
+					i = 0;
+					for (std::vector<AlsaPort*>::const_iterator it = (*s)->inputs.begin (); it != (*s)->inputs.end (); ++it, ++i) {
+						(*s)->capt_chan (i, (float*)((*it)->get_buffer(_samples_per_period)), _samples_per_period);
+					}
+				}
 
 				/* de-queue incoming midi*/
 				i = 0;
@@ -2002,6 +2070,18 @@ AlsaAudioBackend::main_process_thread ()
 					_pcmi->clear_chan (i, _samples_per_period);
 				}
 				_pcmi->play_done (_samples_per_period);
+
+				for (AudioSlaves::iterator s = _slaves.begin (); s != _slaves.end (); ++s) {
+					if (!(*s)->active) {
+						continue;
+					}
+					i = 0;
+					for (std::vector<AlsaPort*>::const_iterator it = (*s)->outputs.begin (); it != (*s)->outputs.end (); ++it, ++i) {
+						(*s)->play_chan (i, (float*)((*it)->get_buffer(_samples_per_period)), _samples_per_period);
+					}
+					(*s)->cycle_end ();
+				}
+
 				nr -= _samples_per_period;
 				_processed_samples += _samples_per_period;
 
@@ -2009,10 +2089,12 @@ AlsaAudioBackend::main_process_thread ()
 				_dsp_load_calc.set_start_timestamp_us (clock1);
 				_dsp_load_calc.set_stop_timestamp_us (g_get_monotonic_time());
 				_dsp_load = _dsp_load_calc.get_dsp_load ();
+				++last_n_periods;
 			}
 
 			if (xrun && (_pcmi->capt_xrun() > 0 || _pcmi->play_xrun() > 0)) {
 				engine.Xrun ();
+				reset_dll = true;
 #if 0
 				fprintf(stderr, "ALSA x-run read: %.2f ms, write: %.2f ms\n",
 						_pcmi->capt_xrun() * 1000.0, _pcmi->play_xrun() * 1000.0);
@@ -2058,6 +2140,7 @@ AlsaAudioBackend::main_process_thread ()
 			}
 
 			_dsp_load = 1.0;
+			reset_dll = true;
 			Glib::usleep (100); // don't hog cpu
 		}
 
@@ -2086,6 +2169,7 @@ AlsaAudioBackend::main_process_thread ()
 			manager.graph_order_callback();
 		}
 		if (connections_changed || ports_changed) {
+			update_system_port_latecies (); // flush, clear
 			engine.latency_callback(false);
 			engine.latency_callback(true);
 		}
@@ -2099,6 +2183,119 @@ AlsaAudioBackend::main_process_thread ()
 	return 0;
 }
 
+/******************************************************************************/
+
+bool
+AlsaAudioBackend::add_slave (const char*  device,
+                             unsigned int slave_rate,
+                             unsigned int slave_spp,
+                             unsigned int duplex)
+{
+	AudioSlave* s = new AudioSlave (device, duplex,
+			_samplerate, _samples_per_period,
+			slave_rate, slave_spp, 2);
+
+	if (s->state ()) {
+		// TODO parse error status
+		PBD::error << string_compose (_("Failed to create slave device '%1' error %2\n"), device, s->state ()) << endmsg;
+		goto errout;
+	}
+
+	for (uint32_t i = 0, n = 1; i < s->ncapt (); ++i) {
+		char tmp[64];
+		do {
+			snprintf(tmp, sizeof(tmp), "extern:capture_%d", n);
+			if (find_port (tmp)) {
+				++n;
+			} else {
+				break;
+			}
+		} while (1);
+		PortHandle p = add_port(std::string(tmp), DataType::AUDIO, static_cast<PortFlags>(IsOutput | IsPhysical | IsTerminal));
+		if (!p) goto errout;
+		AlsaPort *ap = static_cast<AlsaPort*>(p);
+		s->inputs.push_back (ap);
+	}
+
+	for (uint32_t i = 0, n = 1; i < s->nplay (); ++i) {
+		char tmp[64];
+		do {
+			snprintf(tmp, sizeof(tmp), "extern:playback_%d", n);
+			if (find_port (tmp)) {
+				++n;
+			} else {
+				break;
+			}
+		} while (1);
+		PortHandle p = add_port(std::string(tmp), DataType::AUDIO, static_cast<PortFlags>(IsInput | IsPhysical | IsTerminal));
+		if (!p) goto errout;
+		AlsaPort *ap = static_cast<AlsaPort*>(p);
+		s->outputs.push_back (ap);
+	}
+
+	if (!s->start ()) {
+		PBD::error << string_compose (_("Failed to start slave device '%1'\n"), device) << endmsg;
+		goto errout;
+	}
+	s->UpdateLatency.connect_same_thread (s->latency_connection, boost::bind (&AlsaAudioBackend::update_latencies, this));
+	_slaves.push_back (s);
+	return true;
+
+errout:
+	delete s; // releases device
+	return false;
+}
+
+AlsaAudioBackend::AudioSlave::AudioSlave (
+		const char*  device,
+		unsigned int duplex,
+		unsigned int master_rate,
+		unsigned int master_samples_per_period,
+		unsigned int slave_rate,
+		unsigned int slave_samples_per_period,
+		unsigned int periods_per_cycle)
+	: AlsaDeviceReservation (device)
+	, AlsaAudioSlave (
+			(duplex & 1) ? device : NULL /* playback */,
+			(duplex & 2) ? device : NULL /* capture */,
+			master_rate, master_samples_per_period,
+			slave_rate, slave_samples_per_period, periods_per_cycle)
+	, active (false)
+	, halt (false)
+	, dead (false)
+{
+	Halted.connect_same_thread (_halted_connection, boost::bind (&AudioSlave::halted, this));
+}
+
+AlsaAudioBackend::AudioSlave::~AudioSlave ()
+{
+	stop ();
+}
+
+void
+AlsaAudioBackend::AudioSlave::halted ()
+{
+	// Note: Halted() is emitted from the Slave's process thread.
+	release_device ();
+	halt = true;
+}
+
+void
+AlsaAudioBackend::AudioSlave::update_latencies (uint32_t play, uint32_t capt)
+{
+	 LatencyRange lr;
+	 lr.min = lr.max = (capt);
+	 for (std::vector<AlsaPort*>::const_iterator it = inputs.begin (); it != inputs.end (); ++it) {
+		(*it)->set_latency_range (lr, false);
+	 }
+
+	lr.min = lr.max = play;
+	for (std::vector<AlsaPort*>::const_iterator it = outputs.begin (); it != outputs.end (); ++it) {
+		(*it)->set_latency_range (lr, true);
+	}
+	printf (" ----- SLAVE LATENCY play=%d capt=%d\n", play, capt); // XXX DEBUG
+	UpdateLatency (); /* EMIT SIGNAL */
+}
 
 /******************************************************************************/
 
@@ -2176,7 +2373,6 @@ AlsaPort::~AlsaPort () {
 	disconnect_all ();
 }
 
-
 int AlsaPort::connect (AlsaPort *port)
 {
 	if (!port) {
@@ -2216,7 +2412,6 @@ int AlsaPort::connect (AlsaPort *port)
 	_connect (port, true);
 	return 0;
 }
-
 
 void AlsaPort::_connect (AlsaPort *port, bool callback)
 {
@@ -2280,6 +2475,36 @@ bool AlsaPort::is_physically_connected () const
 		}
 	}
 	return false;
+}
+
+void
+AlsaPort::set_latency_range (const LatencyRange &latency_range, bool for_playback)
+{
+	if (for_playback) {
+		_playback_latency_range = latency_range;
+	} else {
+		_capture_latency_range = latency_range;
+	}
+
+	for (std::set<AlsaPort*>::const_iterator it = _connections.begin (); it != _connections.end (); ++it) {
+		if ((*it)->is_physical ()) {
+			(*it)->update_connected_latency (is_input ());
+		}
+	}
+}
+
+void
+AlsaPort::update_connected_latency (bool for_playback)
+{
+	LatencyRange lr;
+	lr.min = lr.max = 0;
+	for (std::set<AlsaPort*>::const_iterator it = _connections.begin (); it != _connections.end (); ++it) {
+		LatencyRange l;
+		l = (*it)->latency_range (for_playback);
+		lr.min = std::max (lr.min, l.min);
+		lr.max = std::max (lr.max, l.max);
+	}
+	set_latency_range (lr, for_playback);
 }
 
 /******************************************************************************/
@@ -2377,3 +2602,91 @@ AlsaMidiEvent::AlsaMidiEvent (const AlsaMidiEvent& other)
 		memcpy (_data, other._data, other._size);
 	}
 };
+
+/******************************************************************************/
+
+AlsaDeviceReservation::AlsaDeviceReservation ()
+	: _device_reservation (0)
+{}
+
+AlsaDeviceReservation::AlsaDeviceReservation (const char* device_name)
+	: _device_reservation (0)
+{
+	acquire_device (device_name);
+}
+
+AlsaDeviceReservation::~AlsaDeviceReservation ()
+{
+	release_device ();
+}
+
+bool
+AlsaDeviceReservation::acquire_device (const char* device_name)
+{
+	int device_number = card_to_num(device_name);
+	if (device_number < 0) return false;
+
+	assert(_device_reservation == 0);
+	_reservation_succeeded = false;
+
+	std::string request_device_exe;
+	if (!PBD::find_file (
+				PBD::Searchpath(Glib::build_filename(ARDOUR::ardour_dll_directory(), "ardouralsautil")
+					+ G_SEARCHPATH_SEPARATOR_S + ARDOUR::ardour_dll_directory()),
+				"ardour-request-device", request_device_exe))
+	{
+		PBD::warning << "ardour-request-device binary was not found..'" << endmsg;
+		return false;
+	}
+
+	char **argp;
+	char tmp[128];
+	argp=(char**) calloc(5,sizeof(char*));
+	argp[0] = strdup(request_device_exe.c_str());
+	argp[1] = strdup("-P");
+	snprintf(tmp, sizeof(tmp), "%d", getpid());
+	argp[2] = strdup(tmp);
+	snprintf(tmp, sizeof(tmp), "Audio%d", device_number);
+	argp[3] = strdup(tmp);
+	argp[4] = 0;
+
+	_device_reservation = new ARDOUR::SystemExec(request_device_exe, argp);
+	_device_reservation->ReadStdout.connect_same_thread (_reservation_connection, boost::bind (&AlsaDeviceReservation::reservation_stdout, this, _1 ,_2));
+	_device_reservation->Terminated.connect_same_thread (_reservation_connection, boost::bind (&AlsaDeviceReservation::release_device, this));
+
+	if (_device_reservation->start(0)) {
+		PBD::warning << _("AlsaAudioBackend: Device Request failed.") << endmsg;
+		release_device();
+		return false;
+	}
+
+	/* wait to check if reservation suceeded. */
+	int timeout = 500; // 5 sec
+	while (_device_reservation && !_reservation_succeeded && --timeout > 0) {
+		Glib::usleep(10000);
+	}
+
+	if (timeout == 0 || !_reservation_succeeded) {
+		PBD::warning << _("AlsaAudioBackend: Device Reservation failed.") << endmsg;
+		release_device();
+		return false;
+	}
+	return true;
+}
+
+void
+AlsaDeviceReservation::release_device ()
+{
+	_reservation_connection.drop_connections();
+	ARDOUR::SystemExec* tmp = _device_reservation;
+	_device_reservation = 0;
+	delete tmp;
+}
+
+void
+AlsaDeviceReservation::reservation_stdout (std::string d, size_t /* s */)
+{
+  if (d.substr(0, 19) == "Acquired audio-card") {
+		_reservation_succeeded = true;
+	}
+}

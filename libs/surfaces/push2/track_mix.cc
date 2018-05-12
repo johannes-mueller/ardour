@@ -29,8 +29,9 @@
 #include "pbd/enumwriter.h"
 
 #include "midi++/parser.h"
-#include "timecode/time.h"
-#include "timecode/bbt_time.h"
+
+#include "temporal/time.h"
+#include "temporal/bbt_time.h"
 
 #include "ardour/async_midi_port.h"
 #include "ardour/audioengine.h"
@@ -570,9 +571,9 @@ TrackMixLayout::strip_vpot_touch (int n, bool touching)
 	boost::shared_ptr<AutomationControl> ac = knobs[n]->controllable();
 	if (ac) {
 		if (touching) {
-			ac->start_touch (session.audible_frame());
+			ac->start_touch (session.audible_sample());
 		} else {
-			ac->stop_touch (session.audible_frame());
+			ac->stop_touch (session.audible_sample());
 		}
 	}
 }
@@ -590,7 +591,7 @@ TrackMixLayout::update_meters ()
 void
 TrackMixLayout::update_clocks ()
 {
-	framepos_t pos = session.audible_frame();
+	samplepos_t pos = session.audible_sample();
 	bool negative = false;
 
 	if (pos < 0) {
@@ -599,7 +600,7 @@ TrackMixLayout::update_clocks ()
 	}
 
 	char buf[16];
-	Timecode::BBT_Time BBT = session.tempo_map().bbt_at_frame (pos);
+	Timecode::BBT_Time BBT = session.tempo_map().bbt_at_sample (pos);
 
 #define BBT_BAR_CHAR "|"
 
@@ -613,22 +614,22 @@ TrackMixLayout::update_clocks ()
 
 	bbt_text->set (buf);
 
-	framecnt_t left;
+	samplecnt_t left;
 	int hrs;
 	int mins;
 	int secs;
 	int millisecs;
 
-	const double frame_rate = session.frame_rate ();
+	const double sample_rate = session.sample_rate ();
 
 	left = pos;
-	hrs = (int) floor (left / (frame_rate * 60.0f * 60.0f));
-	left -= (framecnt_t) floor (hrs * frame_rate * 60.0f * 60.0f);
-	mins = (int) floor (left / (frame_rate * 60.0f));
-	left -= (framecnt_t) floor (mins * frame_rate * 60.0f);
-	secs = (int) floor (left / (float) frame_rate);
-	left -= (framecnt_t) floor ((double)(secs * frame_rate));
-	millisecs = floor (left * 1000.0 / (float) frame_rate);
+	hrs = (int) floor (left / (sample_rate * 60.0f * 60.0f));
+	left -= (samplecnt_t) floor (hrs * sample_rate * 60.0f * 60.0f);
+	mins = (int) floor (left / (sample_rate * 60.0f));
+	left -= (samplecnt_t) floor (mins * sample_rate * 60.0f);
+	secs = (int) floor (left / (float) sample_rate);
+	left -= (samplecnt_t) floor ((double)(secs * sample_rate));
+	millisecs = floor (left * 1000.0 / (float) sample_rate);
 
 	if (negative) {
 		snprintf (buf, sizeof (buf), "-%02" PRId32 ":%02" PRId32 ":%02" PRId32 ".%03" PRId32, hrs, mins, secs, millisecs);

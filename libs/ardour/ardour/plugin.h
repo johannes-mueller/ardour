@@ -33,6 +33,7 @@
 #include "ardour/cycles.h"
 #include "ardour/latent.h"
 #include "ardour/libardour_visibility.h"
+#include "ardour/midi_ring_buffer.h"
 #include "ardour/midi_state_tracker.h"
 #include "ardour/parameter_descriptor.h"
 #include "ardour/types.h"
@@ -113,9 +114,9 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	virtual bool inplace_broken() const { return false; }
 
 	virtual int connect_and_run (BufferSet& bufs,
-			framepos_t start, framepos_t end, double speed,
+			samplepos_t start, samplepos_t end, double speed,
 			ChanMapping in, ChanMapping out,
-			pframes_t nframes, framecnt_t offset);
+			pframes_t nframes, samplecnt_t offset);
 
 	virtual std::set<Evoral::Parameter> automatable() const = 0;
 	virtual std::string describe_parameter (Evoral::Parameter) = 0;
@@ -159,6 +160,8 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 		return boost::shared_ptr<ScalePoints>();
 	}
 
+	bool write_immediate_event (size_t size, const uint8_t* buf);
+
 	void realtime_handle_transport_stopped ();
 	void realtime_locate ();
 	void monitoring_changed ();
@@ -179,6 +182,11 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	virtual bool read_midnam () { return false; }
 	virtual std::string midnam_model () { return ""; }
 	PBD::Signal0<void> UpdateMidnam;
+	PBD::Signal0<void> UpdatedMidnam;
+
+	virtual bool knows_bank_patch () { return false; }
+	virtual uint32_t bank_patch (uint8_t chn) { return UINT32_MAX; }
+	PBD::Signal1<void, uint8_t> BankPatchChange;
 
 	struct PresetRecord {
 	    PresetRecord () : valid (false) {}
@@ -241,7 +249,7 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	}
 
 	/** the max possible latency a plugin will have */
-	virtual framecnt_t max_latency () const { return 0; } // TODO = 0, require implementation
+	virtual samplecnt_t max_latency () const { return 0; } // TODO = 0, require implementation
 
 	/** Emitted when a preset is added or removed, respectively */
 	PBD::Signal0<void> PresetAdded;
@@ -375,6 +383,8 @@ private:
 
 	PBD::ScopedConnection _preset_connection;
 
+	MidiRingBuffer<samplepos_t> _immediate_events;
+
 	void resolve_midi ();
 };
 
@@ -415,9 +425,16 @@ class LIBARDOUR_API PluginInfo {
 	std::string unique_id;
 
 	virtual PluginPtr load (Session& session) = 0;
-	virtual bool is_instrument() const;
+
+	/* NOTE: it is possible for a plugin to be an effect AND an instrument.
+	 * override these funcs as necessary to support that.
+	 */
+	virtual bool is_effect () const;
+	virtual bool is_instrument () const;
+	virtual bool is_utility () const;  //this includes things like "generators" and "midi filters"
+	virtual bool is_analyzer () const;
+
 	virtual bool needs_midi_input() const;
-	virtual bool in_category (const std::string &) const { return false; }
 
 	virtual std::vector<Plugin::PresetRecord> get_presets (bool user_only) const = 0;
 

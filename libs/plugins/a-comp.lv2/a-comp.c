@@ -27,6 +27,8 @@
 #define ACOMP_URI		"urn:ardour:a-comp"
 #define ACOMP_STEREO_URI	"urn:ardour:a-comp#stereo"
 
+#define RESET_PEAK_AFTER_SECONDS 3
+
 #ifndef M_PI
 #  define M_PI 3.14159265358979323846
 #endif
@@ -47,9 +49,12 @@ typedef enum {
 	ACOMP_MAKEUP,
 
 	ACOMP_GAINR,
+	ACOMP_INLEVEL,
 	ACOMP_OUTLEVEL,
+
 	ACOMP_SIDECHAIN,
 	ACOMP_ENABLE,
+	ACOMP_FULL_INLINEDISP,
 
 	ACOMP_A0,
 	ACOMP_A1,
@@ -68,8 +73,11 @@ typedef struct {
 
 	float* gainr;
 	float* outlevel;
+	float* inlevel;
+
 	float* sidechain;
 	float* enable;
+	float* full_inline_display;
 
 	float* input0;
 	float* input1;
@@ -78,12 +86,8 @@ typedef struct {
 	float* output1;
 
 	float srate;
-	float old_yl;
-	float old_y1;
-	float old_yg;
 
 	float makeup_gain;
-	float tau;
 
 #ifdef LV2_EXTENDED
 	LV2_Inline_Display_Image_Surface surf;
@@ -101,10 +105,14 @@ typedef struct {
 	float v_thresdb;
 	float v_gainr;
 	float v_makeup;
-	float v_lvl;
-	float v_lv1;
 	float v_lvl_in;
 	float v_lvl_out;
+	float v_state_x;
+
+	bool v_full_inline_display;
+
+	float v_peakdb;
+	uint32_t peakdb_samples;
 #endif
 } AComp;
 
@@ -125,8 +133,7 @@ instantiate(const LV2_Descriptor* descriptor,
 	}
 
 	acomp->srate = rate;
-	acomp->old_yl=acomp->old_y1=acomp->old_yg=0.f;
-	acomp->tau = (1.0 - exp (-2.f * M_PI * 25.f / acomp->srate));
+	acomp->makeup_gain = 1.f;
 #ifdef LV2_EXTENDED
 	acomp->need_expose = true;
 	acomp->v_lvl_out = -70.f;
@@ -134,7 +141,6 @@ instantiate(const LV2_Descriptor* descriptor,
 
 	return (LV2_Handle)acomp;
 }
-
 
 static void
 connect_port(LV2_Handle instance,
@@ -168,11 +174,17 @@ connect_port(LV2_Handle instance,
 		case ACOMP_OUTLEVEL:
 			acomp->outlevel = (float*)data;
 			break;
+		case ACOMP_INLEVEL:
+			acomp->inlevel = (float*)data;
+			break;
 		case ACOMP_SIDECHAIN:
 			acomp->sidechain = (float*)data;
 			break;
 		case ACOMP_ENABLE:
 			acomp->enable = (float*)data;
+			break;
+		case ACOMP_FULL_INLINEDISP:
+			acomp->full_inline_display = (float*)data;
 			break;
 		default:
 			break;
@@ -256,8 +268,13 @@ activate(LV2_Handle instance)
 	AComp* acomp = (AComp*)instance;
 
 	*(acomp->gainr) = 0.0f;
-	*(acomp->outlevel) = -45.0f;
-	acomp->old_yl=acomp->old_y1=acomp->old_yg=0.f;
+	*(acomp->outlevel) = -70.0f;
+	*(acomp->inlevel) = -160.f;
+
+#ifdef LV2_EXTENDED
+	acomp->v_peakdb = -160.f;
+	acomp->peakdb_samples = 0;
+#endif
 }
 
 static void
@@ -271,14 +288,16 @@ run_mono(LV2_Handle instance, uint32_t n_samples)
 
 	float srate = acomp->srate;
 	float width = (6.f * *(acomp->knee)) + 0.01;
-	float cdb=0.f;
 	float attack_coeff = exp(-1000.f/(*(acomp->attack) * srate));
 	float release_coeff = exp(-1000.f/(*(acomp->release) * srate));
 
 	float max = 0.f;
 	float lgaininp = 0.f;
 	float Lgain = 1.f;
-	float Lxg, Lxl, Lyg, Lyl, Ly1;
+	float Lxg, Lyg;
+	float current_gainr;
+	float old_gainr = *acomp->gainr;
+
 	int usesidechain = (*(acomp->sidechain) <= 0.f) ? 0 : 1;
 	uint32_t i;
 	float ingain;
@@ -291,7 +310,7 @@ run_mono(LV2_Handle instance, uint32_t n_samples)
 	float makeup_target = from_dB(makeup);
 	float makeup_gain = acomp->makeup_gain;
 
-	const float tau = acomp->tau;
+	const float tau = (1.0 - exp (-2.f * M_PI * n_samples * 25.f / acomp->srate));
 
 	if (*acomp->enable <= 0) {
 		ratio = 1.f;
@@ -320,20 +339,28 @@ run_mono(LV2_Handle instance, uint32_t n_samples)
 		acomp->v_makeup = makeup;
 		acomp->need_expose = true;
 	}
+
+	bool full_inline = *acomp->full_inline_display > 0.5;
+	if (full_inline != acomp->v_full_inline_display) {
+		acomp->v_full_inline_display = full_inline;
+		acomp->need_expose = true;
+	}
 #endif
 
-	float in_peak = 0;
-	acomp->v_gainr = 0.0;
+	float in_peak_db = -160.f;
+	float max_gainr = 0.f;
 
 	for (i = 0; i < n_samples; i++) {
 		in0 = input[i];
 		sc0 = sc[i];
 		ingain = usesidechain ? fabs(sc0) : fabs(in0);
-		in_peak = fmaxf (in_peak, ingain);
 		Lyg = 0.f;
 		Lxg = (ingain==0.f) ? -160.f : to_dB(ingain);
 		Lxg = sanitize_denormal(Lxg);
 
+		if (Lxg > in_peak_db) {
+			in_peak_db = Lxg;
+		}
 
 		if (2.f*(Lxg-thresdb) < -width) {
 			Lyg = Lxg;
@@ -344,59 +371,78 @@ run_mono(LV2_Handle instance, uint32_t n_samples)
 			Lyg = Lxg + (1.f/ratio-1.f)*(Lxg-thresdb+width/2.f)*(Lxg-thresdb+width/2.f)/(2.f*width);
 		}
 
-		Lxl = Lxg - Lyg;
+		current_gainr = Lxg - Lyg;
 
-		acomp->old_y1 = sanitize_denormal(acomp->old_y1);
-		acomp->old_yl = sanitize_denormal(acomp->old_yl);
-		Ly1 = fmaxf(Lxl, release_coeff * acomp->old_y1+(1.f-release_coeff)*Lxl);
-		Lyl = attack_coeff * acomp->old_yl+(1.f-attack_coeff)*Ly1;
-		Ly1 = sanitize_denormal(Ly1);
-		Lyl = sanitize_denormal(Lyl);
+		if (current_gainr < old_gainr) {
+			current_gainr = release_coeff*old_gainr + (1.f-release_coeff)*current_gainr;
+		} else if (current_gainr > old_gainr) {
+			current_gainr = attack_coeff*old_gainr + (1.f-attack_coeff)*current_gainr;
+		}
 
-		cdb = -Lyl;
-		Lgain = from_dB(cdb);
+		current_gainr = sanitize_denormal(current_gainr);
 
-		*(acomp->gainr) = Lyl;
-		if (Lyl > acomp->v_gainr) {
-			acomp->v_gainr = Lyl;
+		Lgain = from_dB(-current_gainr);
+
+		old_gainr = current_gainr;
+
+		*(acomp->gainr) = current_gainr;
+		if (current_gainr > max_gainr) {
+			max_gainr = current_gainr;
 		}
 
 		lgaininp = in0 * Lgain;
 
-		makeup_gain += tau * (makeup_target - makeup_gain) + 1e-12;
 		output[i] = lgaininp * makeup_gain;
 
 		max = (fabsf(output[i]) > max) ? fabsf(output[i]) : sanitize_denormal(max);
-
-		// TODO re-use local variables on stack
-		// store values back to acomp at the end of the inner-loop
-		acomp->old_yl = Lyl;
-		acomp->old_y1 = Ly1;
-		acomp->old_yg = Lyg;
 	}
 
-	*(acomp->outlevel) = (max < 0.0056f) ? -45.f : to_dB(max);
+	if ( fabsf(makeup_target - makeup_gain) < 1e-6 ) {
+		makeup_gain = makeup_target;
+	} else {
+		makeup_gain += tau * (makeup_target - makeup_gain) + 1e-12;
+	}
+
+	*(acomp->outlevel) = (max < 0.0056f) ? -70.f : to_dB(max);
+	*(acomp->inlevel) = in_peak_db;
 	acomp->makeup_gain = makeup_gain;
 
 #ifdef LV2_EXTENDED
-	const float old_v_lv1 = acomp->v_lv1;
-	const float old_v_lvl = acomp->v_lvl;
-	const float tot_rel_c = exp(-1000.f/(*(acomp->release) * srate) * n_samples);
-	const float tot_atk_c = exp(-1000.f/(*(acomp->attack) * srate) * n_samples);
-	acomp->v_lv1 = fmaxf (in_peak, tot_rel_c*old_v_lv1 + (1.f-tot_rel_c)*in_peak);
-	acomp->v_lvl = tot_atk_c*old_v_lvl + (1.f-tot_atk_c)*acomp->v_lv1;
+	acomp->v_gainr = max_gainr;
 
-	if (!isfinite_local (acomp->v_lvl)) {
-		acomp->v_lvl = 0.f;
+	if (in_peak_db > acomp->v_peakdb) {
+		acomp->v_peakdb = in_peak_db;
+		acomp->peakdb_samples = 0;
+	} else {
+		acomp->peakdb_samples += n_samples;
+		if ((float)acomp->peakdb_samples/acomp->srate > RESET_PEAK_AFTER_SECONDS) {
+			acomp->v_peakdb = in_peak_db;
+			acomp->peakdb_samples = 0;
+			acomp->need_expose = true;
+		}
 	}
-	const float v_lvl_in = (acomp->v_lvl < 0.001f) ? -60.f : to_dB(acomp->v_lvl);
-	const float v_lvl_out = (max < 0.001f) ? -60.f : to_dB(max);
-	if (fabsf (acomp->v_lvl_out - v_lvl_out) >= 1 || fabsf (acomp->v_lvl_in - v_lvl_in) >= 1) {
-		// >= 1dB difference
+
+	const float v_lvl_in = in_peak_db;
+	const float v_lvl_out = *acomp->outlevel;
+
+	float state_x;
+
+	const float knee_lim_gr = (1.f - 1.f/ratio) * width/2.f;
+
+	if (acomp->v_gainr > knee_lim_gr) {
+		state_x = acomp->v_gainr / (1.f - 1.f/ratio) + thresdb;
+	} else {
+		state_x = sqrt ( (2.f*width*acomp->v_gainr) / (1.f-1.f/ratio) ) + thresdb - width/2.f;
+	}
+
+	if (fabsf (acomp->v_lvl_out - v_lvl_out) >= .1f ||
+	    fabsf (acomp->v_lvl_in - v_lvl_in) >= .1f ||
+	    fabsf (acomp->v_state_x - state_x) >= .1f ) {
+		// >= 0.1dB difference
 		acomp->need_expose = true;
 		acomp->v_lvl_in = v_lvl_in;
-		const float relax_coef = exp(-(float)n_samples/srate);
-		acomp->v_lvl_out = fmaxf (v_lvl_out, relax_coef*acomp->v_lvl_out + (1.f-relax_coef)*v_lvl_out);
+		acomp->v_lvl_out = v_lvl_out;
+		acomp->v_state_x = state_x;
 	}
 	if (acomp->need_expose && acomp->queue_draw) {
 		acomp->need_expose = false;
@@ -418,7 +464,6 @@ run_stereo(LV2_Handle instance, uint32_t n_samples)
 
 	float srate = acomp->srate;
 	float width = (6.f * *(acomp->knee)) + 0.01;
-	float cdb=0.f;
 	float attack_coeff = exp(-1000.f/(*(acomp->attack) * srate));
 	float release_coeff = exp(-1000.f/(*(acomp->release) * srate));
 
@@ -426,7 +471,10 @@ run_stereo(LV2_Handle instance, uint32_t n_samples)
 	float lgaininp = 0.f;
 	float rgaininp = 0.f;
 	float Lgain = 1.f;
-	float Lxg, Lxl, Lyg, Lyl, Ly1;
+	float Lxg, Lyg;
+	float current_gainr;
+	float old_gainr = *acomp->gainr;
+
 	int usesidechain = (*(acomp->sidechain) <= 0.f) ? 0 : 1;
 	uint32_t i;
 	float ingain;
@@ -441,7 +489,7 @@ run_stereo(LV2_Handle instance, uint32_t n_samples)
 	float makeup_target = from_dB(makeup);
 	float makeup_gain = acomp->makeup_gain;
 
-	const float tau = acomp->tau;
+	const float tau = (1.0 - exp (-2.f * M_PI * n_samples * 25.f / acomp->srate));
 
 	if (*acomp->enable <= 0) {
 		ratio = 1.f;
@@ -470,10 +518,16 @@ run_stereo(LV2_Handle instance, uint32_t n_samples)
 		acomp->v_makeup = makeup;
 		acomp->need_expose = true;
 	}
+
+	bool full_inline = *acomp->full_inline_display > 0.5;
+	if (full_inline != acomp->v_full_inline_display) {
+		acomp->v_full_inline_display = full_inline;
+		acomp->need_expose = true;
+	}
 #endif
 
-	float in_peak = 0;
-	acomp->v_gainr = 0.0;
+	float in_peak_db = -160.f;
+	float max_gainr = 0.f;
 
 	for (i = 0; i < n_samples; i++) {
 		in0 = input0[i];
@@ -481,11 +535,12 @@ run_stereo(LV2_Handle instance, uint32_t n_samples)
 		sc0 = sc[i];
 		maxabslr = fmaxf(fabs(in0), fabs(in1));
 		ingain = usesidechain ? fabs(sc0) : maxabslr;
-		in_peak = fmaxf (in_peak, ingain);
 		Lyg = 0.f;
 		Lxg = (ingain==0.f) ? -160.f : to_dB(ingain);
 		Lxg = sanitize_denormal(Lxg);
-
+		if (Lxg > in_peak_db) {
+			in_peak_db = Lxg;
+		}
 
 		if (2.f*(Lxg-thresdb) < -width) {
 			Lyg = Lxg;
@@ -496,61 +551,80 @@ run_stereo(LV2_Handle instance, uint32_t n_samples)
 			Lyg = Lxg + (1.f/ratio-1.f)*(Lxg-thresdb+width/2.f)*(Lxg-thresdb+width/2.f)/(2.f*width);
 		}
 
-		Lxl = Lxg - Lyg;
+		current_gainr = Lxg - Lyg;
 
-		acomp->old_y1 = sanitize_denormal(acomp->old_y1);
-		acomp->old_yl = sanitize_denormal(acomp->old_yl);
-		Ly1 = fmaxf(Lxl, release_coeff * acomp->old_y1+(1.f-release_coeff)*Lxl);
-		Lyl = attack_coeff * acomp->old_yl+(1.f-attack_coeff)*Ly1;
-		Ly1 = sanitize_denormal(Ly1);
-		Lyl = sanitize_denormal(Lyl);
+		if (current_gainr < old_gainr) {
+			current_gainr = release_coeff*old_gainr + (1.f-release_coeff)*current_gainr;
+		} else if (current_gainr > old_gainr) {
+			current_gainr = attack_coeff*old_gainr + (1.f-attack_coeff)*current_gainr;
+		}
 
-		cdb = -Lyl;
-		Lgain = from_dB(cdb);
+		current_gainr = sanitize_denormal(current_gainr);
 
-		*(acomp->gainr) = Lyl;
-		if (Lyl > acomp->v_gainr) {
-			acomp->v_gainr = Lyl;
+		Lgain = from_dB(-current_gainr);
+
+		old_gainr = current_gainr;
+
+		*(acomp->gainr) = current_gainr;
+		if (current_gainr > max_gainr) {
+			max_gainr = current_gainr;
 		}
 
 		lgaininp = in0 * Lgain;
 		rgaininp = in1 * Lgain;
 
-		makeup_gain += tau * (makeup_target - makeup_gain) + 1e-12;
-
 		output0[i] = lgaininp * makeup_gain;
 		output1[i] = rgaininp * makeup_gain;
 
 		max = (fmaxf(fabs(output0[i]), fabs(output1[i])) > max) ? fmaxf(fabs(output0[i]), fabs(output1[i])) : sanitize_denormal(max);
-
-		// TODO re-use local variables on stack
-		// store values back to acomp at the end of the inner-loop
-		acomp->old_yl = Lyl;
-		acomp->old_y1 = Ly1;
-		acomp->old_yg = Lyg;
 	}
 
-	*(acomp->outlevel) = (max < 0.0056f) ? -45.f : to_dB(max);
+	if ( fabsf(makeup_target - makeup_gain) < 1e-6 ) {
+		makeup_gain = makeup_target;
+	} else {
+		makeup_gain += tau * (makeup_target - makeup_gain) + 1e-12;
+	}
+
+	*(acomp->outlevel) = (max < 0.0056f) ? -70.f : to_dB(max);
+	*(acomp->inlevel) = in_peak_db;
 	acomp->makeup_gain = makeup_gain;
 
 #ifdef LV2_EXTENDED
-	const float old_v_lv1 = acomp->v_lv1;
-	const float old_v_lvl = acomp->v_lvl;
-	const float tot_rel_c = exp(-1000.f/(*(acomp->release) * srate) * n_samples);
-	const float tot_atk_c = exp(-1000.f/(*(acomp->attack) * srate) * n_samples);
-	acomp->v_lv1 = fmaxf (in_peak, tot_rel_c*old_v_lv1 + (1.f-tot_rel_c)*in_peak);
-	acomp->v_lvl = tot_atk_c*old_v_lvl + (1.f-tot_atk_c)*acomp->v_lv1;
-	if (!isfinite_local (acomp->v_lvl)) {
-		acomp->v_lvl = 0.f;
+	acomp->v_gainr = max_gainr;
+
+	if (in_peak_db > acomp->v_peakdb) {
+		acomp->v_peakdb = in_peak_db;
+		acomp->peakdb_samples = 0;
+	} else {
+		acomp->peakdb_samples += n_samples;
+		if ((float)acomp->peakdb_samples/acomp->srate > RESET_PEAK_AFTER_SECONDS) {
+			acomp->v_peakdb = in_peak_db;
+			acomp->peakdb_samples = 0;
+			acomp->need_expose = true;
+		}
 	}
-	const float v_lvl_in = (acomp->v_lvl < 0.001f) ? -60.f : to_dB(acomp->v_lvl);
-	const float v_lvl_out = (max < 0.001f) ? -60.f : to_dB(max);
-	if (fabsf (acomp->v_lvl_out - v_lvl_out) >= 1 || fabsf (acomp->v_lvl_in - v_lvl_in) >= 1) {
-		// >= 1dB difference
+
+	const float v_lvl_in = in_peak_db;
+	const float v_lvl_out = *acomp->outlevel;
+
+	float state_x;
+
+	const float knee_lim_gr = (1.f - 1.f/ratio) * width/2.f;
+
+	if (acomp->v_gainr > knee_lim_gr) {
+		state_x = acomp->v_gainr / (1.f - 1.f/ratio) + thresdb;
+	} else {
+		state_x = sqrt ( (2.f*width*acomp->v_gainr) / (1.f-1.f/ratio) ) + thresdb - width/2.f;
+	}
+
+	if (fabsf (acomp->v_lvl_out - v_lvl_out) >= .1f ||
+	    fabsf (acomp->v_lvl_in - v_lvl_in) >= .1f ||
+	    fabsf (acomp->v_state_x - state_x) >= .1f ) {
+		// >= 0.1dB difference
 		acomp->need_expose = true;
 		acomp->v_lvl_in = v_lvl_in;
-		const float relax_coef = exp(-2.0*n_samples/srate);
-		acomp->v_lvl_out = fmaxf (v_lvl_out, relax_coef*acomp->v_lvl_out + (1.f-relax_coef)*v_lvl_out);
+		acomp->v_lvl_out = v_lvl_out;
+		acomp->v_state_x = state_x;
 	}
 	if (acomp->need_expose && acomp->queue_draw) {
 		acomp->need_expose = false;
@@ -686,6 +760,15 @@ render_inline_full (cairo_t* cr, const AComp* self)
 		cairo_stroke (cr);
 	}
 
+	// draw state
+	cairo_set_source_rgba (cr, .8, .8, .8, 1.0);
+
+	const float state_x = w * (1.f - (10.f-self->v_state_x)/70.f);
+	const float state_y = h * (comp_curve (self, self->v_state_x) - 10.f) / -70.f;
+
+	cairo_arc (cr, state_x, state_y, 3.f, 0.f, 2.f*M_PI);
+	cairo_fill (cr);
+
 	// draw curve
 	cairo_set_source_rgba (cr, .8, .8, .8, 1.0);
 	cairo_move_to (cr, 0, h);
@@ -767,15 +850,15 @@ render_inline_only_bars (cairo_t* cr, const AComp* self)
 	cairo_rectangle (cr, x1+wd-w_gr, y2, w_gr, ht);
 	cairo_fill (cr);
 
-	if (self->v_lvl_out > -60.f) {
-		if (self->v_lvl_out > 10.f) {
+	if (self->v_lvl_in > -60.f) {
+		if (self->v_lvl_out > 6.f) {
 			cairo_set_source_rgba (cr, 0.75, 0.0, 0.0, 1.0);
 		} else if (self->v_lvl_out > 0.f) {
 			cairo_set_source_rgba (cr, 0.66, 0.66, 0.0, 1.0);
 		} else {
 			cairo_set_source_rgba (cr, 0.0, 0.66, 0.0, 1.0);
 		}
-		const float w_g = (self->v_lvl_out > 10.f) ? wd : wd * (60.f+self->v_lvl_out) / 70.f;
+		const float w_g = (self->v_lvl_in > 10.f) ? wd : wd * (60.f+self->v_lvl_in) / 70.f;
 		cairo_rectangle (cr, x1, y1, w_g, ht);
 		cairo_fill (cr);
 	}
@@ -829,6 +912,15 @@ render_inline_only_bars (cairo_t* cr, const AComp* self)
 	cairo_move_to (cr, rt, y1);
 	cairo_line_to (cr, rt, y1+ht);
 	cairo_stroke (cr);
+
+	// visualize in peak
+	if (self->v_peakdb > -60.f) {
+		cairo_set_source_rgba (cr, 0.0, 1.0, 0.0, 1.0);
+		const float pk = (self->v_peakdb > 10.f) ? x1+wd : wd * (60.f+self->v_peakdb) / 70.f;
+		cairo_move_to (cr, pk, y1);
+		cairo_line_to (cr, pk, y1+ht);
+		cairo_stroke (cr);
+	}
 }
 
 static LV2_Inline_Display_Image_Surface *
@@ -837,8 +929,8 @@ render_inline (LV2_Handle instance, uint32_t w, uint32_t max_h)
 	AComp* self = (AComp*)instance;
 
 	uint32_t h = MIN (w, max_h);
-	if (w < 200) {
-		h = 40;
+	if (w < 200 && !self->v_full_inline_display) {
+		h = MIN (40, max_h);
 	}
 
 	if (!self->display || self->w != w || self->h != h) {
@@ -850,7 +942,7 @@ render_inline (LV2_Handle instance, uint32_t w, uint32_t max_h)
 
 	cairo_t* cr = cairo_create (self->display);
 
-	if (w >= 200) {
+	if (w >= 200 || self->v_full_inline_display) {
 		render_inline_full (cr, self);
 	} else {
 		render_inline_only_bars (cr, self);

@@ -28,7 +28,7 @@
 
 /* max bytes per individual midi-event
  * events larger than this are ignored */
-#define MaxAlsaMidiEventSize (64)
+#define MaxAlsaMidiEventSize (256)
 
 namespace ARDOUR {
 
@@ -72,7 +72,7 @@ protected:
 			, size(s) {}
 	};
 
-	RingBuffer<uint8_t>* _rb;
+	PBD::RingBuffer<uint8_t>* _rb;
 
 	std::string _name;
 

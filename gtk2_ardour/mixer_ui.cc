@@ -111,6 +111,7 @@ Mixer_UI::Mixer_UI ()
 	, _route_deletion_in_progress (false)
 	, _maximised (false)
 	, _show_mixer_list (true)
+	, _strip_selection_change_without_scroll (false)
 	, myactions (X_("mixer"))
 	, _selection (*this, *this)
 {
@@ -134,8 +135,23 @@ Mixer_UI::Mixer_UI ()
 	scroller_base.drag_dest_set (target_table);
 	scroller_base.signal_drag_data_received().connect (sigc::mem_fun(*this, &Mixer_UI::scroller_drag_data_received));
 
-	// add as last item of strip packer
+	/* create a button to add VCA strips ... will get packed in redisplay_track_list() */
+	Widget* w = manage (new Image (Stock::ADD, ICON_SIZE_BUTTON));
+	w->show ();
+	add_vca_button.add (*w);
+	add_vca_button.set_can_focus(false);
+	add_vca_button.signal_clicked().connect (sigc::mem_fun (*this, &Mixer_UI::new_track_or_bus));
+
+	/* create a button to add mixer strips */
+	w = manage (new Image (Stock::ADD, ICON_SIZE_BUTTON));
+	w->show ();
+	add_button.add (*w);
+	add_button.set_can_focus(false);
+	add_button.signal_clicked().connect (sigc::mem_fun (*this, &Mixer_UI::new_track_or_bus));
+
+	/* add as last item of strip packer */
 	strip_packer.pack_end (scroller_base, true, true);
+	strip_packer.pack_end (add_button, false, false);
 
 	_group_tabs = new MixerGroupTabs (this);
 	VBox* b = manage (new VBox);
@@ -187,36 +203,12 @@ Mixer_UI::Mixer_UI ()
 	group_display_scroller.add (group_display);
 	group_display_scroller.set_policy (Gtk::POLICY_NEVER, Gtk::POLICY_AUTOMATIC);
 
-	HBox* route_group_display_button_box = manage (new HBox());
-
-	Button* route_group_add_button = manage (new Button ());
-	Button* route_group_remove_button = manage (new Button ());
-
-	Widget* w;
-
-	w = manage (new Image (Stock::ADD, ICON_SIZE_BUTTON));
-	w->show();
-	route_group_add_button->add (*w);
-
-	w = manage (new Image (Stock::REMOVE, ICON_SIZE_BUTTON));
-	w->show();
-	route_group_remove_button->add (*w);
-
-	route_group_display_button_box->set_homogeneous (true);
-
-	route_group_add_button->signal_clicked().connect (sigc::mem_fun (*this, &Mixer_UI::new_route_group));
-	route_group_remove_button->signal_clicked().connect (sigc::mem_fun (*this, &Mixer_UI::remove_selected_route_group));
-
-	route_group_display_button_box->add (*route_group_add_button);
-	route_group_display_button_box->add (*route_group_remove_button);
 
 	group_display_vbox.pack_start (group_display_scroller, true, true);
-	group_display_vbox.pack_start (*route_group_display_button_box, false, false);
 
 	group_display_frame.set_name ("BaseFrame");
 	group_display_frame.set_shadow_type (Gtk::SHADOW_IN);
 	group_display_frame.add (group_display_vbox);
-
 
 	list<TargetEntry> target_list;
 	target_list.push_back (TargetEntry ("PluginPresetPtr"));
@@ -246,7 +238,11 @@ Mixer_UI::Mixer_UI ()
 
 	favorite_plugins_frame.set_name ("BaseFrame");
 	favorite_plugins_frame.set_shadow_type (Gtk::SHADOW_IN);
-	favorite_plugins_frame.add (favorite_plugins_scroller);
+	favorite_plugins_frame.add (favorite_plugins_vbox);
+
+	favorite_plugins_vbox.pack_start (favorite_plugins_scroller, true, true);
+	favorite_plugins_vbox.pack_start (favorite_plugins_tag_combo, false, false);
+	favorite_plugins_tag_combo.signal_changed().connect (sigc::mem_fun (*this, &Mixer_UI::tag_combo_changed));
 
 	rhs_pane1.add (favorite_plugins_frame);
 	rhs_pane1.add (track_display_frame);
@@ -262,7 +258,6 @@ Mixer_UI::Mixer_UI ()
 	vca_scroller_base.add_events (Gdk::BUTTON_PRESS_MASK|Gdk::BUTTON_RELEASE_MASK);
 	vca_scroller_base.set_name (X_("MixerWindow"));
 	vca_scroller_base.signal_button_release_event().connect (sigc::mem_fun(*this, &Mixer_UI::masters_scroller_button_release), false);
-	vca_hpacker.pack_end (vca_scroller_base, true, true);
 
 	vca_scroller.add (vca_hpacker);
 	vca_scroller.set_policy (Gtk::POLICY_ALWAYS, Gtk::POLICY_AUTOMATIC);
@@ -279,7 +274,7 @@ Mixer_UI::Mixer_UI ()
 	list_hpane.set_check_divider_position (true);
 	list_hpane.add (list_vpacker);
 	list_hpane.add (global_hpacker);
-	list_hpane.set_child_minsize (list_vpacker, 1);
+	list_hpane.set_child_minsize (list_vpacker, 30);
 
 	XMLNode const * settings = ARDOUR_UI::instance()->mixer_settings();
 	float fract;
@@ -313,10 +308,6 @@ Mixer_UI::Mixer_UI ()
 
 	update_title ();
 
-	route_group_display_button_box->show();
-	route_group_add_button->show();
-	route_group_remove_button->show();
-
 	_content.show ();
 	_content.set_name ("MixerWindow");
 
@@ -327,7 +318,6 @@ Mixer_UI::Mixer_UI ()
 	mixer_scroller_vpacker.show();
 	list_vpacker.show();
 	group_display_button_label.show();
-	group_display_button.show();
 	group_display_scroller.show();
 	favorite_plugins_scroller.show();
 	group_display_vbox.show();
@@ -347,6 +337,7 @@ Mixer_UI::Mixer_UI ()
 	list_hpane.show();
 	group_display.show();
 	favorite_plugins_display.show();
+	add_button.show ();
 
 	MixerStrip::CatchDeletion.connect (*this, invalidator (*this), boost::bind (&Mixer_UI::remove_strip, this, _1), gui_context());
 	VCAMasterStrip::CatchDeletion.connect (*this, invalidator (*this), boost::bind (&Mixer_UI::remove_master, this, _1), gui_context());
@@ -360,8 +351,9 @@ Mixer_UI::Mixer_UI ()
 #else
 #error implement deferred Plugin-Favorite list
 #endif
-	PluginManager::instance ().PluginListChanged.connect (*this, invalidator (*this), boost::bind (&Mixer_UI::refill_favorite_plugins, this), gui_context());
-	PluginManager::instance ().PluginStatusesChanged.connect (*this, invalidator (*this), boost::bind (&Mixer_UI::refill_favorite_plugins, this), gui_context());
+
+	PluginManager::instance ().PluginListChanged.connect (*this, invalidator (*this), boost::bind (&Mixer_UI::plugin_list_changed, this), gui_context());
+	PluginManager::instance ().PluginStatusChanged.connect (*this, invalidator (*this), boost::bind (&Mixer_UI::plugin_list_changed, this), gui_context());
 	ARDOUR::Plugin::PresetsChanged.connect (*this, invalidator (*this), boost::bind (&Mixer_UI::refill_favorite_plugins, this), gui_context());
 }
 
@@ -379,6 +371,12 @@ void
 Mixer_UI::escape ()
 {
 	select_none ();
+}
+
+void
+Mixer_UI::tag_combo_changed ()
+{
+	refill_favorite_plugins();
 }
 
 Gtk::Window*
@@ -586,7 +584,12 @@ Mixer_UI::add_stripables (StripableList& slist)
 
 				show_strip (strip);
 
-				if (!route->is_master()) {
+				if (route->is_master()) {
+
+					out_packer.pack_start (*strip, false, false);
+					strip->set_packed (true);
+
+				} else {
 
 					TreeModel::Row row = *(track_model->insert (insert_iter));
 
@@ -594,11 +597,6 @@ Mixer_UI::add_stripables (StripableList& slist)
 					row[stripable_columns.visible] = strip->marked_for_display();
 					row[stripable_columns.stripable] = route;
 					row[stripable_columns.strip] = strip;
-
-				} else {
-
-					out_packer.pack_start (*strip, false, false);
-					strip->set_packed (true);
 				}
 
 				strip->WidthChanged.connect (sigc::mem_fun(*this, &Mixer_UI::strip_width_changed));
@@ -826,7 +824,7 @@ Mixer_UI::sync_treeview_from_presentation_info (PropertyChange const & what_chan
 			}
 		}
 
-		if (!_selection.axes.empty() && !PublicEditor::instance().track_selection_change_without_scroll ()) {
+		if (!_selection.axes.empty() && !PublicEditor::instance().track_selection_change_without_scroll () && !_strip_selection_change_without_scroll) {
 			move_stripable_into_view ((*_selection.axes.begin())->stripable());
 		}
 
@@ -918,6 +916,17 @@ struct MixerStripSorter {
 bool
 Mixer_UI::strip_button_release_event (GdkEventButton *ev, MixerStrip *strip)
 {
+	/* Selecting a mixer-strip may also select grouped-tracks, and
+	 * presentation_info_changed() being emitted and
+	 * _selection.axes.begin() is being moved into view. This may
+	 * effectively move the track that was clicked-on out of view.
+	 *
+	 * So here only the track that is actually clicked-on is moved into
+	 * view (in case it's partially visible)
+	 */
+	PBD::Unwinder<bool> uw (_strip_selection_change_without_scroll, true);
+	move_stripable_into_view (strip->stripable());
+
 	if (ev->button == 1) {
 		if (_selection.selected (strip)) {
 			/* primary-click: toggle selection state of strip */
@@ -1024,6 +1033,7 @@ Mixer_UI::set_session (Session* sess)
 	}
 
 	refill_favorite_plugins();
+	refill_tag_combo();
 
 	XMLNode* node = ARDOUR_UI::instance()->mixer_settings();
 	set_state (*node, 0);
@@ -1433,7 +1443,12 @@ Mixer_UI::redisplay_track_list ()
 	uint32_t n_masters = 0;
 
 	container_clear (vca_hpacker);
+
 	vca_hpacker.pack_end (vca_scroller_base, true, true);
+	vca_hpacker.pack_end (add_vca_button, false, false);
+
+	add_vca_button.show ();
+	vca_scroller_base.show();
 
 	for (i = rows.begin(); i != rows.end(); ++i) {
 
@@ -2033,7 +2048,6 @@ Mixer_UI::strip_scroller_button_release (GdkEventButton* ev)
 void
 Mixer_UI::scroller_drag_data_received (const Glib::RefPtr<Gdk::DragContext>& context, int x, int y, const Gtk::SelectionData& data, guint info, guint time)
 {
-	printf ("Mixer_UI::scroller_drag_data_received\n");
 	if (data.get_target() != "PluginFavoritePtr") {
 		context->drag_finish (false, false, time);
 		return;
@@ -2055,7 +2069,7 @@ Mixer_UI::scroller_drag_data_received (const Glib::RefPtr<Gdk::DragContext>& con
 		if (!pip->is_instrument ()) {
 			continue;
 		}
-		ARDOUR_UI::instance()->session_add_midi_track ((RouteGroup*) 0, 1, _("MIDI"), Config->get_strict_io (), pip, ppp->_preset.valid ? &ppp->_preset : 0, PresentationInfo::max_order);
+		ARDOUR_UI::instance()->session_add_midi_route (true, (RouteGroup*) 0, 1, _("MIDI"), Config->get_strict_io (), pip, ppp->_preset.valid ? &ppp->_preset : 0, PresentationInfo::max_order);
 		ok = true;
 	}
 
@@ -2140,12 +2154,12 @@ Mixer_UI::set_state (const XMLNode& node, int version)
 		show_monitor_section (yn);
 	}
 
-
-	XMLNode* plugin_order;
-	if ((plugin_order = find_named_node (node, "PluginOrder")) != 0) {
+	//check for the user's plugin_order file
+	XMLNode plugin_order_new(X_("PO"));
+	if (PluginManager::instance().load_plugin_order_file(plugin_order_new)) {
 		store_current_favorite_order ();
 		std::list<string> order;
-		const XMLNodeList& kids = plugin_order->children("PluginInfo");
+		const XMLNodeList& kids = plugin_order_new.children("PluginInfo");
 		XMLNodeConstIterator i;
 		for (i = kids.begin(); i != kids.end(); ++i) {
 			std::string unique_id;
@@ -2159,8 +2173,57 @@ Mixer_UI::set_state (const XMLNode& node, int version)
 		PluginStateSorter cmp (order);
 		favorite_order.sort (cmp);
 		sync_treeview_from_favorite_order ();
+
+	} else {
+		//if there is no user file, then use an existing one from instant.xml
+		//NOTE: if you are loading an old session, this might come from the session's instant.xml
+		//Todo:  in the next major version, we should probably stop doing the instant.xml check, and just use the new file
+		XMLNode* plugin_order;
+		if ((plugin_order = find_named_node (node, "PluginOrder")) != 0) {
+			store_current_favorite_order ();
+			std::list<string> order;
+			const XMLNodeList& kids = plugin_order->children("PluginInfo");
+			XMLNodeConstIterator i;
+			for (i = kids.begin(); i != kids.end(); ++i) {
+				std::string unique_id;
+				if ((*i)->get_property ("unique-id", unique_id)) {
+					order.push_back (unique_id);
+					if ((*i)->get_property ("expanded", yn)) {
+						favorite_ui_state[unique_id] = yn;
+					}
+				}
+			}
+
+			PluginStateSorter cmp (order);
+			favorite_order.sort (cmp);
+			sync_treeview_from_favorite_order ();
+		}
 	}
+
 	return 0;
+}
+
+void
+Mixer_UI::save_plugin_order_file ()
+{
+	//this writes the plugin order to the user's preference file ( plugin_metadata/plugin_order )
+
+	//NOTE:  this replaces the old code that stores info in instant.xml
+	//why?  because instant.xml prefers the per-session settings, and we want this to be a global pref
+
+	store_current_favorite_order ();
+	XMLNode plugin_order ("PluginOrder");
+	uint32_t cnt = 0;
+	for (PluginInfoList::const_iterator i = favorite_order.begin(); i != favorite_order.end(); ++i, ++cnt) {
+		XMLNode* p = new XMLNode ("PluginInfo");
+		p->set_property ("sort", cnt);
+		p->set_property ("unique-id", (*i)->unique_id);
+		if (favorite_ui_state.find ((*i)->unique_id) != favorite_ui_state.end ()) {
+			p->set_property ("expanded", favorite_ui_state[(*i)->unique_id]);
+		}
+		plugin_order.add_child_nocopy (*p);
+	}
+	PluginManager::instance().save_plugin_order_file( plugin_order );
 }
 
 XMLNode&
@@ -2185,20 +2248,6 @@ Mixer_UI::get_state ()
 	assert (tact);
 	node->set_property ("monitor-section-visible", tact->get_active ());
 
-	store_current_favorite_order ();
-	XMLNode* plugin_order = new XMLNode ("PluginOrder");
-	uint32_t cnt = 0;
-	for (PluginInfoList::const_iterator i = favorite_order.begin(); i != favorite_order.end(); ++i, ++cnt) {
-		XMLNode* p = new XMLNode ("PluginInfo");
-		p->set_property ("sort", cnt);
-		p->set_property ("unique-id", (*i)->unique_id);
-		if (favorite_ui_state.find ((*i)->unique_id) != favorite_ui_state.end ()) {
-			p->set_property ("expanded", favorite_ui_state[(*i)->unique_id]);
-		}
-		plugin_order->add_child_nocopy (*p);
-	}
-	node->add_child_nocopy (*plugin_order);
-
 	return *node;
 }
 
@@ -2217,6 +2266,9 @@ Mixer_UI::scroll_left ()
 	using namespace Gtk::Box_Helpers;
 	const BoxList& strips = strip_packer.children();
 	for (BoxList::const_iterator i = strips.begin(); i != strips.end(); ++i) {
+		if (i->get_widget() == & add_button) {
+			continue;
+		}
 		lm += i->get_widget()->get_width ();
 		if (lm >= lp) {
 			lm -= i->get_widget()->get_width ();
@@ -2241,6 +2293,9 @@ Mixer_UI::scroll_right ()
 	using namespace Gtk::Box_Helpers;
 	const BoxList& strips = strip_packer.children();
 	for (BoxList::const_iterator i = strips.begin(); i != strips.end(); ++i) {
+		if (i->get_widget() == & add_button) {
+			continue;
+		}
 		lm += i->get_widget()->get_width ();
 		if (lm > lp + 1) {
 			break;
@@ -2348,16 +2403,6 @@ Mixer_UI::setup_track_display ()
 	VBox* v = manage (new VBox);
 	v->show ();
 	v->pack_start (track_display_scroller, true, true);
-
-	Button* b = manage (new Button);
-	b->show ();
-	Widget* w = manage (new Image (Stock::ADD, ICON_SIZE_BUTTON));
-	w->show ();
-	b->add (*w);
-
-	b->signal_clicked().connect (sigc::mem_fun (*this, &Mixer_UI::new_track_or_bus));
-
-	v->pack_start (*b, false, false);
 
 	track_display_frame.set_name("BaseFrame");
 	track_display_frame.set_shadow_type (Gtk::SHADOW_IN);
@@ -2562,9 +2607,24 @@ Mixer_UI::refiller (PluginInfoList& result, const PluginInfoList& plugs)
 {
 	PluginManager& manager (PluginManager::instance());
 	for (PluginInfoList::const_iterator i = plugs.begin(); i != plugs.end(); ++i) {
+
+		/* not a Favorite? skip it */
 		if (manager.get_status (*i) != PluginManager::Favorite) {
 			continue;
 		}
+
+		/* Check the tag combo selection, and skip this plugin if it doesn't match the selected tag(s) */
+		string test = favorite_plugins_tag_combo.get_active_text();
+		if (test != _("Show All")) {
+			vector<string> tags = manager.get_tags(*i);
+
+			//does the selected tag match any of the tags in the plugin?
+			vector<string>::iterator tt =  find (tags.begin(), tags.end(), test);
+			if (tt == tags.end()) {
+				continue;
+			}
+		}
+
 		result.push_back (*i);
 	}
 }
@@ -2625,6 +2685,30 @@ Mixer_UI::refill_favorite_plugins ()
 	favorite_order = plugs;
 
 	sync_treeview_from_favorite_order ();
+}
+
+void
+Mixer_UI::plugin_list_changed ()
+{
+	refill_favorite_plugins();
+	refill_tag_combo();
+}
+
+void
+Mixer_UI::refill_tag_combo ()
+{
+	PluginManager& mgr (PluginManager::instance());
+
+	std::vector<std::string> tags = mgr.get_all_tags (PluginManager::OnlyFavorites);
+
+	favorite_plugins_tag_combo.clear();
+	favorite_plugins_tag_combo.append_text (_("Show All"));
+
+	for (vector<string>::iterator t = tags.begin (); t != tags.end (); ++t) {
+		favorite_plugins_tag_combo.append_text (*t);
+	}
+
+	favorite_plugins_tag_combo.set_active_text (_("Show All"));
 }
 
 void
@@ -2713,7 +2797,7 @@ Mixer_UI::popup_note_context_menu (GdkEventButton *ev)
 bool
 Mixer_UI::plugin_row_button_press (GdkEventButton *ev)
 {
-	if ((ev->type == GDK_BUTTON_PRESS) && (ev->button == 3) ) {
+	if ((ev->type == GDK_BUTTON_PRESS) && (ev->button == 3)) {
 		TreeModel::Path path;
 		TreeViewColumn* column;
 		int cellx, celly;

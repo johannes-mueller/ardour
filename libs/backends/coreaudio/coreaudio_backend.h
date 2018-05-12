@@ -38,7 +38,7 @@
 #include "coreaudio_pcmio.h"
 #include "coremidi_io.h"
 
-#define MaxCoreMidiEventSize 128 // matches CoreMidi's MIDIPacket
+#define MaxCoreMidiEventSize 256 // matches CoreMidi's MIDIPacket (https://developer.apple.com/documentation/coremidi/midipacket)
 
 namespace ARDOUR {
 
@@ -96,17 +96,9 @@ class CoreBackendPort {
 		return for_playback ? _playback_latency_range : _capture_latency_range;
 	}
 
-	void set_latency_range (const LatencyRange &latency_range, bool for_playback)
-	{
-		if (for_playback)
-		{
-			_playback_latency_range = latency_range;
-		}
-		else
-		{
-			_capture_latency_range = latency_range;
-		}
-	}
+	void set_latency_range (const LatencyRange &latency_range, bool for_playback);
+
+	void update_connected_latency (bool for_playback);
 
   private:
 	CoreAudioBackend &_osx_backend;
@@ -309,8 +301,8 @@ class CoreAudioBackend : public AudioBackend {
 	size_t raw_buffer_size (DataType t);
 
 	/* Process time */
-	framepos_t sample_time ();
-	framepos_t sample_time_at_cycle_start ();
+	samplepos_t sample_time ();
+	samplepos_t sample_time_at_cycle_start ();
 	pframes_t samples_since_cycle_start ();
 
 	int create_process_thread (boost::function<void()> func);
@@ -447,7 +439,6 @@ class CoreAudioBackend : public AudioBackend {
 
 	/* process threads */
 	static void* coreaudio_process_thread (void *);
-	bool coreaudio_set_realtime_policy (pthread_t) const;
 	std::vector<pthread_t> _threads;
 
 	struct ThreadData {
@@ -463,6 +454,7 @@ class CoreAudioBackend : public AudioBackend {
 	PortHandle add_port (const std::string& shortname, ARDOUR::DataType, ARDOUR::PortFlags);
 	int register_system_audio_ports ();
 	void unregister_ports (bool system_only = false);
+	void update_system_port_latecies ();
 
 	std::vector<CoreBackendPort *> _system_inputs;
 	std::vector<CoreBackendPort *> _system_outputs;
@@ -493,6 +485,7 @@ class CoreAudioBackend : public AudioBackend {
 
 	std::vector<PortConnectData *> _port_connection_queue;
 	pthread_mutex_t _port_callback_mutex;
+	pthread_mutex_t _port_registration_mutex;
 	bool _port_change_flag;
 
 	void port_connect_callback (const std::string& a, const std::string& b, bool conn) {

@@ -48,6 +48,9 @@ using namespace std;
 using namespace ARDOUR;
 using namespace PBD;
 
+/* used for templates (previously: !full_state) */
+bool Automatable::skip_saving_automation = false;
+
 const string Automatable::xml_node_name = X_("Automation");
 
 Automatable::Automatable(Session& session)
@@ -329,6 +332,8 @@ Automatable::protect_automation ()
 		case Write:
 			l->set_automation_state (Off);
 			break;
+		case Latch:
+			// no break
 		case Touch:
 			l->set_automation_state (Play);
 			break;
@@ -339,7 +344,7 @@ Automatable::protect_automation ()
 }
 
 void
-Automatable::non_realtime_locate (framepos_t now)
+Automatable::non_realtime_locate (samplepos_t now)
 {
 	bool rolling = _a_session.transport_rolling ();
 
@@ -385,7 +390,7 @@ Automatable::non_realtime_locate (framepos_t now)
 }
 
 void
-Automatable::non_realtime_transport_stop (framepos_t now, bool /*flush_processors*/)
+Automatable::non_realtime_transport_stop (samplepos_t now, bool /*flush_processors*/)
 {
 	for (Controls::iterator li = controls().begin(); li != controls().end(); ++li) {
 		boost::shared_ptr<AutomationControl> c =
@@ -408,6 +413,7 @@ Automatable::non_realtime_transport_stop (framepos_t now, bool /*flush_processor
 		*/
 		const bool list_did_write = !l->in_new_write_pass ();
 
+		c->stop_touch (now);
 		l->stop_touch (now);
 
 		c->commit_transaction (list_did_write);
@@ -425,7 +431,7 @@ Automatable::non_realtime_transport_stop (framepos_t now, bool /*flush_processor
 }
 
 void
-Automatable::automation_run (framepos_t start, pframes_t nframes)
+Automatable::automation_run (samplepos_t start, pframes_t nframes)
 {
 	for (Controls::iterator li = controls().begin(); li != controls().end(); ++li) {
 		boost::shared_ptr<AutomationControl> c =

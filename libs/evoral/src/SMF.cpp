@@ -97,10 +97,11 @@ SMF::test(const std::string& path)
 	smf_t* test_smf = smf_load(f);
 	fclose(f);
 
-	const bool success = (test_smf != NULL);
+	if (!test_smf) {
+		return false;
+	}
 	smf_delete(test_smf);
-
-	return success;
+	return true;
 }
 
 /** Attempt to open the SMF file for reading and/or writing.
@@ -326,6 +327,7 @@ SMF::read_event(uint32_t* delta_t, uint32_t* size, uint8_t** buf, event_id_t* no
 		if (*size < (unsigned)event_size) {
 			*buf = (uint8_t*)realloc(*buf, event_size);
 		}
+		assert (*buf);
 		memcpy(*buf, event->midi_buffer, size_t(event_size));
 		*size = event_size;
 		if (((*buf)[0] & 0xF0) == 0x90 && (*buf)[2] == 0) {

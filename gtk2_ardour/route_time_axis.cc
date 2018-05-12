@@ -46,6 +46,7 @@
 #include "ardour/event_type_map.h"
 #include "ardour/pannable.h"
 #include "ardour/panner.h"
+#include "ardour/plugin_insert.h"
 #include "ardour/processor.h"
 #include "ardour/profile.h"
 #include "ardour/route_group.h"
@@ -73,6 +74,7 @@
 #include "item_counts.h"
 #include "keyboard.h"
 #include "paste_context.h"
+#include "patch_change_widget.h"
 #include "playlist_selector.h"
 #include "point_selection.h"
 #include "public_editor.h"
@@ -788,62 +790,18 @@ RouteTimeAxisView::build_display_menu ()
 			/* show nothing */
 		}
 
-#ifdef XXX_OLD_DESTRUCTIVE_API_XXX
-		Menu* mode_menu = manage (new Menu);
-		MenuList& mode_items = mode_menu->items ();
-		mode_menu->set_name ("ArdourContextMenu");
-
-		RadioMenuItem::Group mode_group;
-
-		int normal = 0;
-		int tape = 0;
-		int non_layered = 0;
-
-		for (TrackSelection::const_iterator t = s.begin(); t != s.end(); ++t) {
-			RouteTimeAxisView* r = dynamic_cast<RouteTimeAxisView*> (*t);
-			if (!r || !r->is_track ()) {
-				continue;
-			}
-
-			switch (r->track()->mode()) {
-			case Normal:
-				++normal;
-				break;
-			case Destructive:
-				++tape;
-				break;
-			case NonLayered:
-				++non_layered;
-				break;
-			}
-		}
-
-		mode_items.push_back (RadioMenuElem (mode_group, _("Normal Mode")));
-		i = dynamic_cast<RadioMenuItem*> (&mode_items.back ());
-		i->signal_activate().connect (sigc::bind (sigc::mem_fun (*this, &RouteTimeAxisView::set_track_mode), ARDOUR::Normal, true));
-		i->set_active (normal != 0 && tape == 0 && non_layered == 0);
-		i->set_inconsistent (normal != 0 && (tape != 0 || non_layered != 0));
-
-		mode_items.push_back (RadioMenuElem (mode_group, _("Tape Mode")));
-		i = dynamic_cast<RadioMenuItem*> (&mode_items.back ());
-		i->signal_activate().connect (sigc::bind (sigc::mem_fun (*this, &RouteTimeAxisView::set_track_mode), ARDOUR::Destructive, true));
-		i->set_active (normal == 0 && tape != 0 && non_layered == 0);
-		i->set_inconsistent (tape != 0 && (normal != 0 || non_layered != 0));
-
-		mode_items.push_back (RadioMenuElem (mode_group, _("Non-Layered Mode")));
-		i = dynamic_cast<RadioMenuItem*> (&mode_items.back ());
-		i->signal_activate().connect (sigc::bind (sigc::mem_fun (*this, &RouteTimeAxisView::set_track_mode), ARDOUR::NonLayered, true));
-		i->set_active (normal == 0 && tape == 0 && non_layered != 0);
-		i->set_inconsistent (non_layered != 0 && (normal != 0 || tape != 0));
-
-		items.push_back (MenuElem (_("Record Mode"), *mode_menu));
-#endif
-
 		items.push_back (SeparatorElem());
 
 		build_playlist_menu ();
 		items.push_back (MenuElem (_("Playlist"), *playlist_action_menu));
 		items.back().set_sensitive (_editor.get_selection().tracks.size() <= 1);
+	}
+
+	if (!is_midi_track () && _route->the_instrument ()) {
+		/* MIDI Bus */
+		items.push_back (MenuElem (_("Patch Selector..."),
+					sigc::mem_fun(*this, &RouteUI::select_midi_patch)));
+		items.push_back (SeparatorElem());
 	}
 
 	route_group_menu->detach ();
@@ -908,34 +866,8 @@ RouteTimeAxisView::build_display_menu ()
 	items.push_back (MenuElem (_("Remove"), sigc::mem_fun(_editor, &PublicEditor::remove_tracks)));
 }
 
-#ifdef XXX_OLD_DESTRUCTIVE_API_XXX
 void
-RouteTimeAxisView::set_track_mode (TrackMode mode, bool apply_to_selection)
-{
-	if (apply_to_selection) {
-		_editor.get_selection().tracks.foreach_route_time_axis (boost::bind (&RouteTimeAxisView::set_track_mode, _1, mode, false));
-	} else {
-
-		bool needs_bounce = false;
-
-		if (!track()->can_use_mode (mode, needs_bounce)) {
-
-			if (!needs_bounce) {
-				/* cannot be done */
-				return;
-			} else {
-				cerr << "would bounce this one\n";
-				return;
-			}
-		}
-
-		track()->set_mode (mode);
-	}
-}
-#endif
-
-void
-RouteTimeAxisView::show_timestretch (framepos_t start, framepos_t end, int layers, int layer)
+RouteTimeAxisView::show_timestretch (samplepos_t start, samplepos_t end, int layers, int layer)
 {
 	TimeAxisView::show_timestretch (start, end, layers, layer);
 
@@ -1090,17 +1022,11 @@ RouteTimeAxisView::route_color_changed ()
 void
 RouteTimeAxisView::set_samples_per_pixel (double fpp)
 {
-	double speed = 1.0;
-
-	if (track()) {
-		speed = track()->speed();
-	}
-
 	if (_view) {
-		_view->set_samples_per_pixel (fpp * speed);
+		_view->set_samples_per_pixel (fpp);
 	}
 
-	StripableTimeAxisView::set_samples_per_pixel (fpp * speed);
+	StripableTimeAxisView::set_samples_per_pixel (fpp);
 }
 
 void
@@ -1261,7 +1187,7 @@ RouteTimeAxisView::use_new_playlist (bool prompt, vector<boost::shared_ptr<Playl
 		if (copy) {
 			tr->use_copy_playlist ();
 		} else {
-			tr->use_new_playlist ();
+			tr->use_default_new_playlist ();
 		}
 		tr->playlist()->set_name (name);
 	}
@@ -1366,23 +1292,18 @@ RouteTimeAxisView::set_selected_regionviews (RegionSelection& regions)
  * @param results List to add things to.
  */
 void
-RouteTimeAxisView::get_selectables (framepos_t start, framepos_t end, double top, double bot, list<Selectable*>& results, bool within)
+RouteTimeAxisView::get_selectables (samplepos_t start, samplepos_t end, double top, double bot, list<Selectable*>& results, bool within)
 {
-	double speed = 1.0;
-
-	if (track() != 0) {
-		speed = track()->speed();
-	}
-
-	framepos_t const start_adjusted = session_frame_to_track_frame(start, speed);
-	framepos_t const end_adjusted   = session_frame_to_track_frame(end, speed);
-
 	if ((_view && ((top < 0.0 && bot < 0.0))) || touched (top, bot)) {
-		_view->get_selectables (start_adjusted, end_adjusted, top, bot, results, within);
+		_view->get_selectables (start, end, top, bot, results, within);
 	}
 
 	/* pick up visible automation tracks */
-	StripableTimeAxisView::get_selectables (start_adjusted, end_adjusted, top, bot, results, within);
+	for (Children::iterator i = children.begin(); i != children.end(); ++i) {
+		if (!(*i)->hidden()) {
+			(*i)->get_selectables (start, end, top, bot, results, within);
+		}
+	}
 }
 
 void
@@ -1439,7 +1360,7 @@ RouteTimeAxisView::name_entry_changed (string const& str)
 }
 
 boost::shared_ptr<Region>
-RouteTimeAxisView::find_next_region (framepos_t pos, RegionPoint point, int32_t dir)
+RouteTimeAxisView::find_next_region (samplepos_t pos, RegionPoint point, int32_t dir)
 {
 	boost::shared_ptr<Playlist> pl = playlist ();
 
@@ -1450,8 +1371,8 @@ RouteTimeAxisView::find_next_region (framepos_t pos, RegionPoint point, int32_t 
 	return boost::shared_ptr<Region> ();
 }
 
-framepos_t
-RouteTimeAxisView::find_next_region_boundary (framepos_t pos, int32_t dir)
+samplepos_t
+RouteTimeAxisView::find_next_region_boundary (samplepos_t pos, int32_t dir)
 {
 	boost::shared_ptr<Playlist> pl = playlist ();
 
@@ -1477,13 +1398,6 @@ RouteTimeAxisView::fade_range (TimeSelection& selection)
 	playlist = tr->playlist();
 
 	TimeSelection time (selection);
-	float const speed = tr->speed();
-	if (speed != 1.0f) {
-		for (TimeSelection::iterator i = time.begin(); i != time.end(); ++i) {
-			(*i).start = session_frame_to_track_frame((*i).start, speed);
-			(*i).end   = session_frame_to_track_frame((*i).end,   speed);
-		}
-	}
 
 	playlist->clear_changes ();
 	playlist->clear_owned_changes ();
@@ -1512,13 +1426,6 @@ RouteTimeAxisView::cut_copy_clear (Selection& selection, CutCopyOp op)
 	playlist = tr->playlist();
 
 	TimeSelection time (selection.time);
-	float const speed = tr->speed();
-	if (speed != 1.0f) {
-		for (TimeSelection::iterator i = time.begin(); i != time.end(); ++i) {
-			(*i).start = session_frame_to_track_frame((*i).start, speed);
-			(*i).end   = session_frame_to_track_frame((*i).end,   speed);
-		}
-	}
 
 	playlist->clear_changes ();
 	playlist->clear_owned_changes ();
@@ -1578,7 +1485,7 @@ RouteTimeAxisView::cut_copy_clear (Selection& selection, CutCopyOp op)
 }
 
 bool
-RouteTimeAxisView::paste (framepos_t pos, const Selection& selection, PasteContext& ctx, const int32_t sub_num)
+RouteTimeAxisView::paste (samplepos_t pos, const Selection& selection, PasteContext& ctx, const int32_t sub_num)
 {
 	if (!is_track()) {
 		return false;
@@ -1595,21 +1502,16 @@ RouteTimeAxisView::paste (framepos_t pos, const Selection& selection, PasteConte
 
 	DEBUG_TRACE (DEBUG::CutNPaste, string_compose ("paste to %1\n", pos));
 
-	if (track()->speed() != 1.0f) {
-		pos = session_frame_to_track_frame (pos, track()->speed());
-		DEBUG_TRACE (DEBUG::CutNPaste, string_compose ("modified paste to %1\n", pos));
-	}
-
 	/* add multi-paste offset if applicable */
-	std::pair<framepos_t, framepos_t> extent   = (*p)->get_extent();
-	const framecnt_t                  duration = extent.second - extent.first;
+	std::pair<samplepos_t, samplepos_t> extent   = (*p)->get_extent();
+	const samplecnt_t                  duration = extent.second - extent.first;
 	pos += _editor.get_paste_offset(pos, ctx.count, duration);
 
 	pl->clear_changes ();
 	pl->clear_owned_changes ();
 	if (Config->get_edit_mode() == Ripple) {
-		std::pair<framepos_t, framepos_t> extent = (*p)->get_extent_with_endspace();
-		framecnt_t amount = extent.second - extent.first;
+		std::pair<samplepos_t, samplepos_t> extent = (*p)->get_extent_with_endspace();
+		samplecnt_t amount = extent.second - extent.first;
 		pl->ripple(pos, amount * ctx.times, boost::shared_ptr<Region>());
 	}
 	pl->paste (*p, pos, ctx.times, sub_num);
@@ -1711,7 +1613,7 @@ RouteTimeAxisView::use_playlist (RadioMenuItem *item, boost::weak_ptr<Playlist> 
 		return;
 	}
 
-	track()->use_playlist (pl);
+	track()->use_playlist (track()->data_type(), pl);
 
 	RouteGroup* rg = route_group();
 
@@ -1748,10 +1650,10 @@ RouteTimeAxisView::use_playlist (RadioMenuItem *item, boost::weak_ptr<Playlist> 
 			boost::shared_ptr<Playlist> ipl = session()->playlists->by_name(playlist_name);
 			if (!ipl) {
 				// No playlist for this track for this take yet, make it
-				track->use_new_playlist();
+				track->use_default_new_playlist();
 				track->playlist()->set_name(playlist_name);
 			} else {
-				track->use_playlist(ipl);
+				track->use_playlist(track->data_type(), ipl);
 			}
 		}
 	}
@@ -2267,8 +2169,42 @@ RouteTimeAxisView::processor_menu_item_toggled (RouteTimeAxisView::ProcessorAuto
 }
 
 void
+RouteTimeAxisView::reread_midnam ()
+{
+	boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert> (_route->the_instrument ());
+	assert (pi);
+	bool rv = pi->plugin ()->read_midnam();
+
+	if (rv && patch_change_dialog ()) {
+		patch_change_dialog ()->refresh ();
+	}
+}
+
+void
+RouteTimeAxisView::drop_instrument_ref ()
+{
+	midnam_connection.drop_connections ();
+}
+
+void
 RouteTimeAxisView::processors_changed (RouteProcessorChange c)
 {
+	if (_route) {
+		boost::shared_ptr<Processor> the_instrument (_route->the_instrument());
+		boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert> (the_instrument);
+		if (pi && pi->plugin ()->has_midnam ()) {
+			midnam_connection.drop_connections ();
+			the_instrument->DropReferences.connect (midnam_connection, invalidator (*this),
+					boost::bind (&RouteTimeAxisView::drop_instrument_ref, this),
+					gui_context());
+			pi->plugin()->UpdateMidnam.connect (midnam_connection, invalidator (*this),
+					boost::bind (&RouteTimeAxisView::reread_midnam, this),
+					gui_context());
+
+			reread_midnam ();
+		}
+	}
+
 	if (c.type == RouteProcessorChange::MeterPointChange) {
 		/* nothing to do if only the meter point has changed */
 		return;

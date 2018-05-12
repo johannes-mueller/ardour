@@ -2306,14 +2306,6 @@ RCOptionEditor::RCOptionEditor ()
 
 	add_option (_("Editor"), new OptionEditorHeading (_("General")));
 
-	add_option (_("Editor"),
-	     new BoolOption (
-		     "rubberbanding-snaps-to-grid",
-		     _("Snap rubberband to grid"),
-		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_rubberbanding_snaps_to_grid),
-		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_rubberbanding_snaps_to_grid)
-		     ));
-
 	bo = new BoolOption (
 		     "name-new-markers",
 		     _("Prompt for new marker names"),
@@ -2331,6 +2323,33 @@ RCOptionEditor::RCOptionEditor ()
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_draggable_playhead),
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_draggable_playhead)
 		     ));
+
+	ComboOption<float>* dps = new ComboOption<float> (
+		     "draggable-playhead-speed",
+		     _("Playhead dragging speed (%)"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_draggable_playhead_speed),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_draggable_playhead_speed)
+		     );
+	dps->add (0.05, _("5%"));
+	dps->add (0.1, _("10%"));
+	dps->add (0.25, _("25%"));
+	dps->add (0.5, _("50%"));
+	dps->add (1.0, _("100%"));
+	add_option (_("Editor"), dps);
+
+	ComboOption<float>* eet = new ComboOption<float> (
+		     "extra-ui-extents-time",
+		     _("Limit zooming & summary view to X minutes beyond session extents"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_extra_ui_extents_time),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_extra_ui_extents_time)
+		     );
+	eet->add (1, _("1 minute"));
+	eet->add (2, _("2 minutes"));
+	eet->add (20, _("20 minutes"));
+	eet->add (60, _("1 hour"));
+	eet->add (60*2, _("2 hours"));
+	eet->add (60*24, _("24 hours"));
+	add_option (_("Editor"), eet);
 
 	if (!Profile->get_mixbus()) {
 
@@ -2462,6 +2481,77 @@ RCOptionEditor::RCOptionEditor ()
 	rsas->add(ExistingNewlyCreatedBoth, _("existing selection and newly-created regions"));
 
 	add_option (_("Editor"), rsas);
+
+	add_option (_("Editor/Snap"), new OptionEditorHeading (_("General Snap options:")));
+	
+	add_option (_("Editor/Snap"),
+		    new SpinOption<uint32_t> (
+			    "snap-threshold",
+			    _("Snap Threshold (pixels)"),
+			    sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_threshold),
+			    sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_threshold),
+			    10, 200,
+			    1, 10
+			    ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "show-snapped-cursor",
+		     _("Show \"snapped cursor\""),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_show_snapped_cursor),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_show_snapped_cursor)
+		     ));
+	
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "rubberbanding-snaps-to-grid",
+		     _("Snap rubberband selection to grid"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_rubberbanding_snaps_to_grid),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_rubberbanding_snaps_to_grid)
+		     ));
+
+	add_option (_("Editor/Snap"), new OptionEditorHeading (_("When \"Snap\" is enabled, snap to:")));
+
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "snap-to-marks",
+		     _("Markers"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_to_marks),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_to_marks)
+		     ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "snap-to-region-sync",
+		     _("Region Sync Points"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_to_region_sync),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_to_region_sync)
+		     ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "snap-to-region-start",
+		     _("Region Starts"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_to_region_start),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_to_region_start)
+		     ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "snap-to-region-end",
+		     _("Region Ends"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_to_region_end),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_to_region_end)
+		     ));
+
+	add_option (_("Editor/Snap"),
+	     new BoolOption (
+		     "snap-to-grid",
+		     _("Grid"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_snap_to_grid),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_snap_to_grid)
+		     ));
 
 	add_option (_("Editor/Modifiers"), new OptionEditorHeading (_("Keyboard Modifiers")));
 	add_option (_("Editor/Modifiers"), new KeyboardOptions);
@@ -3162,8 +3252,8 @@ RCOptionEditor::RCOptionEditor ()
 		(_sync_source_2997->tip_widget(),
 		 _("<b>When enabled</b> the external timecode source is assumed to use 29.97 fps instead of 30000/1001.\n"
 			 "SMPTE 12M-1999 specifies 29.97df as 30000/1001. The spec further mentions that "
-			 "drop-frame timecode has an accumulated error of -86ms over a 24-hour period.\n"
-			 "Drop-frame timecode would compensate exactly for a NTSC color frame rate of 30 * 0.9990 (ie 29.970000). "
+			 "drop-sample timecode has an accumulated error of -86ms over a 24-hour period.\n"
+			 "Drop-sample timecode would compensate exactly for a NTSC color frame rate of 30 * 0.9990 (ie 29.970000). "
 			 "That is not the actual rate. However, some vendors use that rate - despite it being against the specs - "
 			 "because the variant of using exactly 29.97 fps has zero timecode drift.\n"
 			 ));
@@ -3787,7 +3877,7 @@ RCOptionEditor::RCOptionEditor ()
 
 	add_option (_("Appearance/Toolbar"),
 			new ColumVisibilityOption (
-				"action-table-columns", _("Lua Action Script Button Visibility"), 4,
+				"action-table-columns", _("Display Action-Buttons"), 4,
 				sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_action_table_columns),
 				sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_action_table_columns)
 				)
@@ -3855,7 +3945,7 @@ RCOptionEditor::RCOptionEditor ()
 
 	OptionEditorHeading* quirks_head = new OptionEditorHeading (_("Various Workarounds for Windowing Systems"));
 
-	quirks_head->set_note (string_compose (_("Rules for closing, minimizing, maximizing, and stay-on-top can vary\
+	quirks_head->set_note (string_compose (_("Rules for closing, minimizing, maximizing, and stay-on-top can vary \
 with each version of your OS, and the preferences that you've set in your OS.\n\n\
 You can adjust the options, below, to change how %1's windows and dialogs behave.\n\n\
 These settings will only take effect after %1 is restarted.\n\

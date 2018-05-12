@@ -33,7 +33,7 @@ using namespace Gtkmm2ext;
 using namespace ARDOUR;
 
 static const gchar *_grid_strings[] = {
-	N_("main grid"),
+	N_("Main Grid"),
 	N_("Beats/128"),
 	N_("Beats/64"),
 	N_("Beats/32"),
@@ -52,6 +52,13 @@ static const gchar *_grid_strings[] = {
 	N_("Beats/3"),
 	N_("Beats/2"),
 	N_("Beats"),
+	0
+};
+
+static const int _grid_beats[] = {
+	0,
+	128, 64, 32, 28, 24, 20, 16, 14,
+	12, 10, 8, 7, 6, 5, 4, 3, 2, 1,
 	0
 };
 
@@ -131,34 +138,33 @@ QuantizeDialog::start_grid_size () const
 double
 QuantizeDialog::end_grid_size () const
 {
-	return grid_size_to_musical_time (start_grid_combo.get_active_text ());
+	return grid_size_to_musical_time (end_grid_combo.get_active_text ());
 }
 
 double
 QuantizeDialog::grid_size_to_musical_time (const string& txt) const
 {
-	if (txt == "main grid") {
+	if (txt == _("main grid")) {
 		bool success;
 
-		Evoral::Beats b = editor.get_grid_type_as_beats (success, 0);
+		Temporal::Beats b = editor.get_grid_type_as_beats (success, 0);
 		if (!success) {
 			return 1.0;
 		}
 		return b.to_double();
 	}
 
-	string::size_type slash;
 
-	if ((slash = txt.find ('/')) != string::npos) {
-		if (slash < txt.length() - 1) {
-			double divisor = PBD::atof (txt.substr (slash+1));
-			if (divisor != 0.0) {
-				return 1.0/divisor;
-			}
+	double divisor = 1.0;
+	for (size_t i = 1; i < grid_strings.size(); ++i) {
+		if (txt == grid_strings[i]) {
+			assert (_grid_beats[i] != 0);
+			divisor = 1.0 / _grid_beats[i];
+			break;
 		}
 	}
 
-	return 1.0;
+	return divisor;
 }
 
 float

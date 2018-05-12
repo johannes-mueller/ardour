@@ -82,13 +82,13 @@ public:
 
 	void set_height (uint32_t, TrackHeightMode m = OnlySelf);
 
-	boost::shared_ptr<ARDOUR::MidiRegion> add_region (ARDOUR::framepos_t, ARDOUR::framecnt_t, bool);
+	boost::shared_ptr<ARDOUR::MidiRegion> add_region (ARDOUR::samplepos_t, ARDOUR::samplecnt_t, bool);
 
 	void show_all_automation (bool apply_to_selection = false);
 	void show_existing_automation (bool apply_to_selection = false);
 	void create_automation_child (const Evoral::Parameter& param, bool show);
 
-	bool paste (ARDOUR::framepos_t, const Selection&, PasteContext& ctx, const int32_t sub_num);
+	bool paste (ARDOUR::samplepos_t, const Selection&, PasteContext& ctx, const int32_t sub_num);
 
 	ARDOUR::NoteMode  note_mode() const { return _note_mode; }
 	ARDOUR::ColorMode color_mode() const { return _color_mode; }
@@ -108,7 +108,7 @@ public:
 
 	uint8_t get_channel_for_add () const;
 
-	void get_per_region_note_selection (std::list<std::pair<PBD::ID, std::set<boost::shared_ptr<Evoral::Note<Evoral::Beats> > > > >&);
+	void get_per_region_note_selection (std::list<std::pair<PBD::ID, std::set<boost::shared_ptr<Evoral::Note<Temporal::Beats> > > > >&);
 
 protected:
 	void start_step_editing ();
@@ -120,8 +120,6 @@ private:
 
 	void setup_midnam_patches ();
 	void update_patch_selector ();
-	void drop_instrument_ref ();
-	PBD::ScopedConnectionList midnam_connection;
 
 	void start_scroomer_update ();
 	void stop_scroomer_update ();
@@ -138,8 +136,6 @@ private:
 	void set_note_mode (ARDOUR::NoteMode mode, bool apply_to_selection = false);
 	void set_color_mode (ARDOUR::ColorMode, bool force = false, bool redisplay = true, bool apply_to_selection = false);
 	void set_note_range (MidiStreamView::VisibleNoteRange range, bool apply_to_selection = false);
-	void send_patch_change ();
-
 	void route_active_changed ();
 	void note_range_changed ();
 	void contents_height_changed ();
@@ -186,7 +182,7 @@ private:
 	void add_note_selection_region_view (RegionView* rv, uint8_t note, uint16_t chn_mask);
 	void extend_note_selection_region_view (RegionView*, uint8_t note, uint16_t chn_mask);
 	void toggle_note_selection_region_view (RegionView*, uint8_t note, uint16_t chn_mask);
-	void get_per_region_note_selection_region_view (RegionView*, std::list<std::pair<PBD::ID, std::set<boost::shared_ptr<Evoral::Note<Evoral::Beats> > > > >&);
+	void get_per_region_note_selection_region_view (RegionView*, std::list<std::pair<PBD::ID, std::set<boost::shared_ptr<Evoral::Note<Temporal::Beats> > > > >&);
 
 	void ensure_step_editor ();
 
@@ -196,6 +192,8 @@ private:
 	ParameterMenuMap _controller_menu_map;
 
 	StepEditor* _step_editor;
+
+	void immediate_patch_chnage_response (int response);
 };
 
 #endif /* __ardour_midi_time_axis_h__ */

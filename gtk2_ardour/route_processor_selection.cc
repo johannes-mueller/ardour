@@ -43,16 +43,6 @@ RouteProcessorSelection::RouteProcessorSelection (SessionHandlePtr& s, AxisViewP
 {
 }
 
-RouteProcessorSelection&
-RouteProcessorSelection::operator= (const RouteProcessorSelection& other)
-{
-	if (&other != this) {
-		(*((ProcessorSelection*) this)) = (*((ProcessorSelection const *) &other));
-		axes = other.axes;
-	}
-	return *this;
-}
-
 bool
 operator== (const RouteProcessorSelection& a, const RouteProcessorSelection& b)
 {
@@ -180,6 +170,7 @@ RouteProcessorSelection::set (AxisView* r)
 	if (!shp.session()) {
 		return;
 	}
+	PresentationInfo::ChangeSuspender cs;
 	shp.session()->selection().clear_stripables ();
 	add (r, true);
 }

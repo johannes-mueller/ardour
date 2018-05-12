@@ -53,6 +53,7 @@ gtk2_ardour_sources = [
         'automation_time_axis.cc',
         'axis_view.cc',
         'big_clock_window.cc',
+        'big_transport_window.cc',
         'bundle_manager.cc',
         'clock_group.cc',
         'color_theme_manager.cc',
@@ -178,6 +179,7 @@ gtk2_ardour_sources = [
         'panner_interface.cc',
         'panner_ui.cc',
         'patch_change.cc',
+        'patch_change_widget.cc',
         'piano_roll_header.cc',
         'pingback.cc',
         'playlist_selector.cc',
@@ -218,6 +220,7 @@ gtk2_ardour_sources = [
         'route_ui.cc',
         'ruler_dialog.cc',
         'save_as_dialog.cc',
+        'save_template_dialog.cc',
         'search_path_option.cc',
         'script_selector.cc',
         'selection.cc',
@@ -247,7 +250,7 @@ gtk2_ardour_sources = [
         'template_dialog.cc',
         'tempo_curve.cc',
         'tempo_dialog.cc',
-        'tempo_lines.cc',
+        'grid_lines.cc',
         'time_axis_view.cc',
         'time_axis_view_item.cc',
         'time_fx_dialog.cc',
@@ -257,6 +260,8 @@ gtk2_ardour_sources = [
         'track_selection.cc',
         'track_view_list.cc',
         'transform_dialog.cc',
+        'transport_control.cc',
+        'transport_control_ui.cc',
         'transpose_dialog.cc',
         'ui_config.cc',
         'utils.cc',
@@ -332,10 +337,26 @@ def enoify (major, minor):
             return "\\n\\\"More Music for Films\\\"" # 1983
         elif minor == 12:
             return "\\n\\\"Working Backwards\\\"" # 1984 Compilation
-        elif minor == 13:
+    elif major == 6:
+        if minor == 0:
             return "\\n\\\"The Pearl\\\"" # 1984 Collaborative
-        elif minor == 14:
+        elif minor == 1:
             return "\\n\\\"Begegnungen\\\"" # 1984 Compilation
+        ### From now on, no more compilations, names are not suitable
+        elif minor == 2:
+            return "\\n\\\"Thursday Afternoon\\\"" # 1985
+        elif minor == 3:
+            return "\\n\\\"Music for Films III\\\"" # 1988 Collaborative
+        elif minor == 4:
+            return "\\n\\\"Wrong Way Up\\\"" # 1990 Collaborative
+        elif minor == 5:
+            return "\\n\\\"Nerve Net\\\"" # 1992
+        elif minor == 6:
+            return "\\n\\\"The Shutov Assembly\\\"" # 1992
+        elif minor == 7:
+            return "\\n\\\"Neroli\\\"" # 1993
+        elif minor == 8:
+            return "\\n\\\"Headcandy\\\"" # 1994
     return "\\\"\\\""
 
 def options(opt):
@@ -478,7 +499,7 @@ def build(bld):
                 'libpbd',
                 'libardour',
                 'libardour_cp',
-                'libtimecode',
+                'libtemporal',
                 'libmidipp',
                 'libgtkmm2ext',
                 'libcanvas',
@@ -518,7 +539,7 @@ def build(bld):
 #                'libpbd',
 #                'libardour',
 #                'libardour_cp',
-#                'libtimecode',
+#                'libtemporal',
 #                'libmidipp',
 #                'libgtkmm2ext',
 #                'libcanvas',
@@ -550,7 +571,7 @@ def build(bld):
                              'libmidipp',
                              'libardour',
                              'libardour_cp',
-                             'libtimecode',
+                             'libtemporal',
                              'libmidipp',
                              'libgtk2_ardour',
                              'libgtkmm2ext',
@@ -598,7 +619,7 @@ def build(bld):
     obj.use      = [ 'libpbd',
                      'libardour',
                      'libardour_cp',
-                     'libtimecode',
+                     'libtemporal',
                      'libmidipp',
                      'libgtkmm2ext',
                      'libcanvas',

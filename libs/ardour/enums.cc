@@ -23,7 +23,7 @@
 #include "evoral/Range.hpp" // shouldn't Evoral have its own enum registration?
 
 #include "ardour/delivery.h"
-#include "ardour/diskstream.h"
+#include "ardour/disk_io.h"
 #include "ardour/export_channel.h"
 #include "ardour/export_filename.h"
 #include "ardour/export_format_base.h"
@@ -58,6 +58,7 @@ setup_enum_writer ()
 	AlignStyle _AlignStyle;
 	AlignChoice _AlignChoice;
 	MeterPoint _MeterPoint;
+	DiskIOPoint _DiskIOPoint;
 	MeterType _MeterType;
 	TrackMode _TrackMode;
 	NoteMode _NoteMode;
@@ -76,6 +77,7 @@ setup_enum_writer ()
 	PFLPosition _PFLPosition;
 	AFLPosition _AFLPosition;
 	DenormalModel _DenormalModel;
+	ClockDeltaMode _ClockDeltaMode;
 	LayerModel _LayerModel;
 	InsertMergePolicy _InsertMergePolicy;
 	ListenPosition _ListenPosition;
@@ -100,7 +102,7 @@ setup_enum_writer ()
 	TracksAutoNamingRule _TracksAutoNamingRule;
 	Session::StateOfTheState _Session_StateOfTheState;
 	Source::Flag _Source_Flag;
-	Diskstream::Flag _Diskstream_Flag;
+	DiskIOProcessor::Flag _DiskIOProcessor_Flag;
 	Location::Flags _Location_Flags;
 	PositionLockStyle _PositionLockStyle;
 	TempoSection::Type _TempoSection_Type;
@@ -131,7 +133,7 @@ setup_enum_writer ()
 	Session::SlaveState _Session_SlaveState;
 	MTC_Status _MIDI_MTC_Status;
 	Evoral::OverlapType _OverlapType;
-    BufferingPreset _BufferingPreset;
+	BufferingPreset _BufferingPreset;
 	AutoReturnTarget _AutoReturnTarget;
 	PresentationInfo::Flag _PresentationInfo_Flag;
 	MusicalMode::Type mode;
@@ -141,6 +143,12 @@ setup_enum_writer ()
 #define REGISTER_BITS(e) enum_writer.register_bits (typeid(e).name(), i, s); i.clear(); s.clear()
 #define REGISTER_ENUM(e) i.push_back (e); s.push_back (#e)
 #define REGISTER_CLASS_ENUM(t,e) i.push_back (t::e); s.push_back (#e)
+
+	/* in mid-2017 the entire code base was changed to use "samples"
+	   instead of frames, which included several enums. This hack table
+	   entry will catch all of them.
+	*/
+	enum_writer.add_to_hack_table ("Frames", "Samples");
 
 	REGISTER_ENUM (NullAutomation);
 	REGISTER_ENUM (GainAutomation);
@@ -177,6 +185,7 @@ setup_enum_writer ()
 	REGISTER_ENUM (Write);
 	REGISTER_ENUM (Touch);
 	REGISTER_ENUM (Play);
+	REGISTER_ENUM (Latch);
 	REGISTER_BITS (_AutoState);
 
 	REGISTER_ENUM (CaptureTime);
@@ -194,6 +203,11 @@ setup_enum_writer ()
 	REGISTER_ENUM (MeterOutput);
 	REGISTER_ENUM (MeterCustom);
 	REGISTER (_MeterPoint);
+
+	REGISTER_ENUM (DiskIOPreFader);
+	REGISTER_ENUM (DiskIOPostFader);
+	REGISTER_ENUM (DiskIOCustom);
+	REGISTER (_DiskIOPoint);
 
 	REGISTER_ENUM (MeterMaxSignal);
 	REGISTER_ENUM (MeterMaxPeak);
@@ -303,6 +317,11 @@ setup_enum_writer ()
 	REGISTER_ENUM (AFLFromAfterProcessors);
 	REGISTER (_AFLPosition);
 
+	REGISTER_ENUM (NoDelta);
+	REGISTER_ENUM (DeltaEditPoint);
+	REGISTER_ENUM (DeltaOriginMarker);
+	REGISTER (_ClockDeltaMode);
+
 	REGISTER_ENUM (DenormalNone);
 	REGISTER_ENUM (DenormalFTZ);
 	REGISTER_ENUM (DenormalDAZ);
@@ -391,7 +410,6 @@ setup_enum_writer ()
 	REGISTER (_Session_RecordState);
 
 	REGISTER_CLASS_ENUM (SessionEvent, SetTransportSpeed);
-	REGISTER_CLASS_ENUM (SessionEvent, SetTrackSpeed);
 	REGISTER_CLASS_ENUM (SessionEvent, Locate);
 	REGISTER_CLASS_ENUM (SessionEvent, LocateRoll);
 	REGISTER_CLASS_ENUM (SessionEvent, LocateRollLocate);
@@ -403,7 +421,6 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (SessionEvent, Overwrite);
 	REGISTER_CLASS_ENUM (SessionEvent, SetSyncSource);
 	REGISTER_CLASS_ENUM (SessionEvent, Audition);
-	REGISTER_CLASS_ENUM (SessionEvent, InputConfigurationChange);
 	REGISTER_CLASS_ENUM (SessionEvent, SetPlayAudioRange);
 	REGISTER_CLASS_ENUM (SessionEvent, CancelPlayAudioRange);
 	REGISTER_CLASS_ENUM (SessionEvent, RealTimeOperation);
@@ -506,10 +523,10 @@ setup_enum_writer ()
 	REGISTER_ENUM(ExistingNewlyCreatedBoth);
 	REGISTER (_RegionSelectionAfterSplit);
 
-	REGISTER_CLASS_ENUM (Diskstream, Recordable);
-	REGISTER_CLASS_ENUM (Diskstream, Hidden);
-	REGISTER_CLASS_ENUM (Diskstream, Destructive);
-	REGISTER_BITS (_Diskstream_Flag);
+	REGISTER_CLASS_ENUM (DiskIOProcessor, Recordable);
+	REGISTER_CLASS_ENUM (DiskIOProcessor, Hidden);
+	REGISTER_CLASS_ENUM (DiskIOProcessor, Destructive);
+	REGISTER_BITS (_DiskIOProcessor_Flag);
 
 	REGISTER_CLASS_ENUM (Location, IsMark);
 	REGISTER_CLASS_ENUM (Location, IsAutoPunch);
@@ -519,6 +536,7 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (Location, IsSessionRange);
 	REGISTER_CLASS_ENUM (Location, IsRangeMarker);
 	REGISTER_CLASS_ENUM (Location, IsSkip);
+	REGISTER_CLASS_ENUM (Location, IsClockOrigin);
 	REGISTER_BITS (_Location_Flags);
 
 	REGISTER_CLASS_ENUM (TempoSection, Ramp);
@@ -539,7 +557,7 @@ setup_enum_writer ()
 
 	REGISTER_CLASS_ENUM (AnyTime, Timecode);
 	REGISTER_CLASS_ENUM (AnyTime, BBT);
-	REGISTER_CLASS_ENUM (AnyTime, Frames);
+	REGISTER_CLASS_ENUM (AnyTime, Samples);
 	REGISTER_CLASS_ENUM (AnyTime, Seconds);
 	REGISTER (_AnyTime_Type);
 
@@ -622,7 +640,7 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (ExportProfileManager, Timecode);
 	REGISTER_CLASS_ENUM (ExportProfileManager, BBT);
 	REGISTER_CLASS_ENUM (ExportProfileManager, MinSec);
-	REGISTER_CLASS_ENUM (ExportProfileManager, Frames);
+	REGISTER_CLASS_ENUM (ExportProfileManager, Samples);
 	REGISTER (_ExportProfileManager_TimeFormat);
 
 	REGISTER_CLASS_ENUM (RegionExportChannelFactory, None);

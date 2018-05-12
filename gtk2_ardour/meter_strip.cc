@@ -184,8 +184,8 @@ MeterStrip::MeterStrip (Session* sess, boost::shared_ptr<ARDOUR::Route> rt)
 	name_label.set_layout_ellipsize_width(48 * PANGO_SCALE);
 	name_label.set_size_request(PX_SCALE(18, 18), PX_SCALE(50, 50));
 	name_label.set_alignment(-1.0, .5);
-	set_tooltip (name_label, _route->name());
-	set_tooltip (*level_meter, _route->name());
+	set_tooltip (name_label, Gtkmm2ext::markup_escape_text (_route->name()));
+	set_tooltip (*level_meter, Gtkmm2ext::markup_escape_text (_route->name()));
 
 	number_label.set_corner_radius(2);
 	number_label.set_elements((ArdourButton::Element)(ArdourButton::Edge|ArdourButton::Body|ArdourButton::Text|ArdourButton::Inactive));
@@ -488,7 +488,7 @@ MeterStrip::set_tick_bar (int m)
 	} else {
 		n = meter_ticks1_area.get_name();
 		if (n.substr(0,3) == "Bar") {
-			meter_ticks1_area.set_name(n.substr(3,-1));
+			meter_ticks1_area.set_name (n.substr (3));
 		}
 	}
 	if (_tick_bar & 2) {
@@ -499,7 +499,7 @@ MeterStrip::set_tick_bar (int m)
 	} else {
 		n = meter_ticks2_area.get_name();
 		if (n.substr(0,3) == "Bar") {
-			meter_ticks2_area.set_name(n.substr(3,-1));
+			meter_ticks2_area.set_name (n.substr (3));
 		}
 	}
 }

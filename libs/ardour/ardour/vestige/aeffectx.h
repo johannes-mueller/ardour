@@ -74,8 +74,8 @@
 #define audioMasterCloseWindow 40
 #define audioMasterGetDirectory 41
 #define audioMasterUpdateDisplay 42
-#define audioMasterBeginEdit 43
-#define audioMasterEndEdit 44
+#define audioMasterBeginEdit 43  //BeginGesture
+#define audioMasterEndEdit 44   //EndGesture
 #define audioMasterOpenFileSelector 45
 #define audioMasterCloseFileSelector 46 // currently unused
 #define audioMasterEditFile 47 // currently unused
@@ -159,7 +159,7 @@ struct _VstMidiEvent
 	// 04
 	int byteSize;
 	// 08
-	int deltaFrames;
+	int deltaSamples;
 	// 0c?
 	int flags;
 	// 10?
@@ -235,10 +235,10 @@ typedef struct _VstEvents VstEvents;
 /* this struct taken from http://asseca.com/vst-24-specs/efGetParameterProperties.html */
 struct _VstParameterProperties
 {
-	float stepFloat;              /* float step */
-	float smallStepFloat;         /* small float step */
-	float largeStepFloat;         /* large float step */
-	char label[VestigeMaxLabelLen];  /* parameter label */
+	float stepFloat;             /* float step */
+	float smallStepFloat;        /* small float step */
+	float largeStepFloat;        /* large float step */
+	char label[64];              /* parameter label */
 	int32_t flags;               /* @see VstParameterFlags */
 	int32_t minInteger;          /* integer minimum */
 	int32_t maxInteger;          /* integer maximum */

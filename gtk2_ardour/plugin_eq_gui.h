@@ -100,8 +100,8 @@ private:
 	float _log_coeff;
 	float _log_max;
 
-	ARDOUR::framecnt_t _buffer_size;
-	ARDOUR::framecnt_t _signal_buffer_size;
+	ARDOUR::samplecnt_t _buffer_size;
+	ARDOUR::samplecnt_t _signal_buffer_size;
 
 	// buffers
 	ARDOUR::BufferSet _bufferset;
@@ -142,6 +142,7 @@ private:
 	Gtk::ComboBox *dBScaleCombo;
 	Glib::RefPtr<Gtk::ListStore> dBScaleModel;
 
+	Gtk::CheckButton *_signal_button;
 	Gtk::CheckButton *_phase_button;
 
 	// signals and connections

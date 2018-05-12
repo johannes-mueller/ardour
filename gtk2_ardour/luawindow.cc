@@ -50,6 +50,7 @@
 #include "luawindow.h"
 #include "public_editor.h"
 #include "utils.h"
+#include "ui_config.h"
 #include "utils_videotl.h"
 
 #include "pbd/i18n.h"
@@ -107,6 +108,16 @@ LuaWindow::LuaWindow ()
 	reinit_lua ();
 	update_title ();
 	set_wmclass (X_("ardour_mixer"), PROGRAM_NAME);
+
+#ifdef __APPLE__
+	set_type_hint (Gdk::WINDOW_TYPE_HINT_DIALOG);
+#else
+	if (UIConfiguration::instance().get_all_floating_windows_are_dialogs()) {
+		set_type_hint (Gdk::WINDOW_TYPE_HINT_DIALOG);
+	} else {
+		set_type_hint (Gdk::WINDOW_TYPE_HINT_UTILITY);
+	}
+#endif
 
 	script_select.disable_scrolling ();
 
@@ -286,6 +297,12 @@ LuaWindow::run_script ()
 			}
 		} catch (luabridge::LuaException const& e) {
 			append_text (string_compose (_("LuaException: %1"), e.what()));
+		} catch (Glib::Exception const& e) {
+			append_text (string_compose (_("Glib Exception: %1"), e.what()));
+		} catch (std::exception const& e) {
+			append_text (string_compose (_("C++ Exception: %1"), e.what()));
+		} catch (...) {
+			append_text (string_compose (_("C++ Exception: %1"), "..."));
 		}
 	} else {
 		// script with factory method
@@ -304,6 +321,12 @@ LuaWindow::run_script ()
 			lua->do_command ("factory = nil;");
 		} catch (luabridge::LuaException const& e) {
 			append_text (string_compose (_("LuaException: %1"), e.what()));
+		} catch (Glib::Exception const& e) {
+			append_text (string_compose (_("Glib Exception: %1"), e.what()));
+		} catch (std::exception const& e) {
+			append_text (string_compose (_("C++ Exception: %1"), e.what()));
+		} catch (...) {
+			append_text (string_compose (_("C++ Exception: %1"), "..."));
 		}
 	}
 }
@@ -452,7 +475,7 @@ LuaWindow::save_script ()
 			update_gui_state (); // XXX here?
 			append_text (X_("> ") + string_compose (_("Saved as %1"), sb.path));
 			return; // OK
-		} catch (Glib::FileError e) {
+		} catch (Glib::FileError const& e) {
 			msg = string_compose (_("Error saving file: %1"), e.what());
 			goto errorout;
 		}
@@ -471,11 +494,12 @@ LuaWindow::save_script ()
 
 	// 5) construct filename -- TODO ask user for name, ask to replace file.
 	do {
+		char tme[80];
 		char buf[80];
 		time_t t = time(0);
 		struct tm * timeinfo = localtime (&t);
-		strftime (buf, sizeof(buf), "%s%d", timeinfo);
-		sprintf (buf, "%s%ld", buf, random ()); // is this valid?
+		strftime (tme, sizeof(tme), "%s", timeinfo);
+		snprintf (buf, sizeof(buf), "%s%ld", tme, random ());
 		MD5 md5;
 		std::string fn = md5.digestString (buf);
 
@@ -503,7 +527,7 @@ LuaWindow::save_script ()
 		LuaScripting::instance().refresh (true);
 		append_text (X_("> ") + string_compose (_("Saved as %1"), path));
 		return; // OK
-	} catch (Glib::FileError e) {
+	} catch (Glib::FileError const& e) {
 		msg = string_compose (_("Error saving file: %1"), e.what());
 		goto errorout;
 	}
@@ -730,7 +754,7 @@ LuaWindow::ScriptBuffer::load ()
 		script = Glib::file_get_contents (path);
 		flags |= Buffer_Valid;
 		flags &= BufferFlags(~Buffer_Dirty);
-	} catch (Glib::FileError e) {
+	} catch (Glib::FileError const& e) {
 		return false;
 	}
 	return true;

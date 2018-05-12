@@ -63,6 +63,8 @@ namespace ArdourWidgets {
 class ArdourWindow;
 class IOSelectorWindow;
 class ControlSlaveUI;
+class PatchChangeGridDialog;
+class SaveTemplateDialog;
 
 class RoutePinWindowProxy : public WM::ProxyBase
 {
@@ -111,6 +113,8 @@ public:
 	virtual void set_color (uint32_t c);
 	Gdk::Color route_color () const;
 	void choose_color ();
+
+	void select_midi_patch ();
 
 	bool ignore_toggle;
 	bool wait_for_release;
@@ -243,7 +247,7 @@ public:
 	virtual void map_frozen ();
 
 	void adjust_latency ();
-	bool process_save_template_prompter (ArdourWidgets::Prompter& prompter, const std::string& dir);
+	void save_as_template_dialog_response (int response, SaveTemplateDialog* d);
 	void save_as_template ();
 
 	static Gtkmm2ext::ActiveState solo_active_state (boost::shared_ptr<ARDOUR::Stripable>);
@@ -266,6 +270,8 @@ public:
 	void comment_changed ();
 	void comment_edited ();
 	bool ignore_comment_edit;
+
+	void set_disk_io_point (ARDOUR::DiskIOPoint);
 
 protected:
 
@@ -298,10 +304,13 @@ protected:
 
 	bool mark_hidden (bool yn);
 
+	PatchChangeGridDialog* patch_change_dialog () const;
+
 private:
 	void parameter_changed (std::string const&);
 	void relabel_solo_button ();
 	void track_mode_changed ();
+	void delete_patch_change_dialog ();
 
 	std::string route_state_id () const;
 

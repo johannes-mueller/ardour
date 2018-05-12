@@ -19,16 +19,22 @@
 */
 
 #include <map>
+#include <vector>
 #include <cerrno>
 
 #include <glib/gstdio.h>
 
 #include <gtkmm/filechooserdialog.h>
+#include <gtkmm/frame.h>
+#include <gtkmm/liststore.h>
 #include <gtkmm/notebook.h>
+#include <gtkmm/progressbar.h>
 #include <gtkmm/separator.h>
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/stock.h>
+#include <gtkmm/textview.h>
 #include <gtkmm/treeiter.h>
+#include <gtkmm/treeview.h>
 
 #include "pbd/basename.h"
 #include "pbd/error.h"
@@ -39,8 +45,11 @@
 
 #include "gtkmm2ext/gui_thread.h"
 
+#include "ardour/filename_extensions.h"
 #include "ardour/filesystem_paths.h"
 #include "ardour/template_utils.h"
+
+#include "progress_reporter.h"
 
 #include "template_dialog.h"
 
@@ -48,6 +57,132 @@ using namespace std;
 using namespace Gtk;
 using namespace PBD;
 using namespace ARDOUR;
+
+class TemplateManager : public Gtk::HBox,
+			public ProgressReporter
+{
+public:
+	virtual ~TemplateManager () {}
+
+	virtual void init () = 0;
+	void handle_dirty_description ();
+
+	PBD::Signal0<void> TemplatesImported;
+
+protected:
+	TemplateManager ();
+
+	Gtk::TextView _description_editor;
+	Gtk::Button _save_desc;
+
+	void setup_model (const std::vector<ARDOUR::TemplateInfo>& templates);
+
+	void row_selection_changed ();
+
+	virtual void delete_selected_template () = 0;
+	bool adjust_plugin_paths (XMLNode* node, const std::string& name, const std::string& new_name) const;
+
+	struct SessionTemplateColumns : public Gtk::TreeModel::ColumnRecord {
+		SessionTemplateColumns () {
+			add (name);
+			add (path);
+			add (description);
+		}
+
+		Gtk::TreeModelColumn<std::string> name;
+		Gtk::TreeModelColumn<std::string> path;
+		Gtk::TreeModelColumn<std::string> description;
+	};
+
+	Glib::RefPtr<Gtk::ListStore>  _template_model;
+	SessionTemplateColumns _template_columns;
+
+	Gtk::TreeModel::const_iterator _current_selection;
+
+	Gtk::ProgressBar _progress_bar;
+	std::string _current_action;
+
+private:
+	void render_template_names (Gtk::CellRenderer* rnd, const Gtk::TreeModel::iterator& it);
+	void validate_edit (const Glib::ustring& path_string, const Glib::ustring& new_name);
+	void start_edit ();
+
+	void set_desc_dirty ();
+
+	bool key_event (GdkEventKey* ev);
+
+	virtual void get_templates (vector<TemplateInfo>& templates) const = 0;
+
+	virtual void rename_template (Gtk::TreeModel::iterator& item, const Glib::ustring& new_name) = 0;
+
+	virtual void save_template_desc ();
+
+	void export_all_templates ();
+	void import_template_set ();
+
+	virtual std::string templates_dir () const = 0;
+	virtual std::string template_file (const Gtk::TreeModel::const_iterator& item) const = 0;
+
+	virtual bool adjust_xml_tree (XMLTree& tree, const std::string& old_name, const std::string& new_name) const = 0;
+
+	Gtk::TreeView _template_treeview;
+	Gtk::CellRendererText _validating_cellrenderer;
+	Gtk::TreeView::Column _validated_column;
+
+	bool _desc_dirty;
+
+	Gtk::Button _remove_button;
+	Gtk::Button _rename_button;
+
+	Gtk::Button _export_all_templates_button;
+	Gtk::Button _import_template_set_button;
+
+	sigc::connection _cursor_changed_connection;
+
+	void update_progress_gui (float p);
+};
+
+class SessionTemplateManager : public TemplateManager
+{
+public:
+	SessionTemplateManager () : TemplateManager () {}
+	~SessionTemplateManager () {}
+
+	void init ();
+
+	void get_templates (vector<TemplateInfo>& templates) const;
+
+private:
+	void rename_template (Gtk::TreeModel::iterator& item, const Glib::ustring& new_name);
+	void delete_selected_template ();
+
+	std::string templates_dir () const;
+	std::string template_file (const Gtk::TreeModel::const_iterator& item) const;
+
+	bool adjust_xml_tree (XMLTree& tree, const std::string& old_name, const std::string& new_name) const;
+};
+
+
+class RouteTemplateManager : public TemplateManager
+{
+public:
+	RouteTemplateManager () : TemplateManager () {}
+	~RouteTemplateManager () {}
+
+	void init ();
+
+	void get_templates (vector<TemplateInfo>& templates) const;
+
+private:
+	void rename_template (Gtk::TreeModel::iterator& item, const Glib::ustring& new_name);
+	void delete_selected_template ();
+
+	std::string templates_dir () const;
+	std::string template_file (const Gtk::TreeModel::const_iterator& item) const;
+
+	bool adjust_xml_tree (XMLTree& tree, const std::string& old_name, const std::string& new_name) const;
+};
+
 
 
 TemplateDialog::TemplateDialog ()
@@ -62,7 +197,7 @@ TemplateDialog::TemplateDialog ()
 	nb->append_page (*route_tm, _("Track Templates"));
 
 	get_vbox()->pack_start (*nb);
-	add_button (_("Ok"), Gtk::RESPONSE_OK);
+	add_button (_("Done"), Gtk::RESPONSE_OK);
 
 	get_vbox()->show_all();
 
@@ -71,11 +206,18 @@ TemplateDialog::TemplateDialog ()
 
 	session_tm->TemplatesImported.connect (*this, invalidator (*this), boost::bind (&RouteTemplateManager::init, route_tm), gui_context ());
 	route_tm->TemplatesImported.connect (*this, invalidator (*this), boost::bind (&SessionTemplateManager::init, session_tm), gui_context ());
+
+	signal_hide().connect (sigc::mem_fun (session_tm, &TemplateManager::handle_dirty_description));
+	signal_hide().connect (sigc::mem_fun (route_tm, &TemplateManager::handle_dirty_description));
+	nb->signal_switch_page().connect (sigc::hide (sigc::hide (sigc::mem_fun (session_tm, &TemplateManager::handle_dirty_description))));
+	nb->signal_switch_page().connect (sigc::hide (sigc::hide (sigc::mem_fun (route_tm, &TemplateManager::handle_dirty_description))));
 }
 
 TemplateManager::TemplateManager ()
 	: HBox ()
 	, ProgressReporter ()
+	, _save_desc (_("Save Description"))
+	, _desc_dirty (false)
 	, _remove_button (_("Remove"))
 	, _rename_button (_("Rename"))
 	, _export_all_templates_button (_("Export all"))
@@ -91,7 +233,7 @@ TemplateManager::TemplateManager ()
 
 	_validated_column.set_cell_data_func (_validating_cellrenderer, sigc::mem_fun (*this, &TemplateManager::render_template_names));
 	_validating_cellrenderer.signal_edited().connect (sigc::mem_fun (*this, &TemplateManager::validate_edit));
-	_template_treeview.signal_cursor_changed().connect (sigc::mem_fun (*this, &TemplateManager::row_selection_changed));
+	_cursor_changed_connection = _template_treeview.signal_cursor_changed().connect (sigc::mem_fun (*this, &TemplateManager::row_selection_changed));
 	_template_treeview.signal_key_press_event().connect (sigc::mem_fun (*this, &TemplateManager::key_event));
 
 	ScrolledWindow* sw = manage (new ScrolledWindow);
@@ -99,11 +241,11 @@ TemplateManager::TemplateManager ()
 	sw->add (_template_treeview);
 	sw->set_size_request (300, 200);
 
-
 	VBox* vb_btns = manage (new VBox);
 	vb_btns->set_spacing (4);
 	vb_btns->pack_start (_rename_button, false, false);
 	vb_btns->pack_start (_remove_button, false, false);
+	vb_btns->pack_start (_save_desc, false, false);
 
 	_rename_button.set_sensitive (false);
 	_rename_button.signal_clicked().connect (sigc::mem_fun (*this, &TemplateManager::start_edit));
@@ -127,7 +269,21 @@ TemplateManager::TemplateManager ()
 	vb->pack_start (*sw);
 	vb->pack_start (_progress_bar);
 
+	Frame* desc_sample = manage (new Frame (_("Description")));
+
+	_description_editor.set_wrap_mode (Gtk::WRAP_WORD);
+	_description_editor.set_size_request (300,400);
+	_description_editor.set_border_width (6);
+
+	_save_desc.set_sensitive (false);
+	_save_desc.signal_clicked().connect (sigc::mem_fun (*this, &TemplateManager::save_template_desc));
+
+	_description_editor.get_buffer()->signal_changed().connect (sigc::mem_fun (*this, &TemplateManager::set_desc_dirty));
+
+	desc_sample->add (_description_editor);
+
 	pack_start (*vb);
+	pack_start (*desc_sample);
 	pack_start (*vb_btns);
 
 	show_all_children ();
@@ -145,24 +301,57 @@ TemplateManager::setup_model (const vector<TemplateInfo>& templates)
 
 		row[_template_columns.name] = it->name;
 		row[_template_columns.path] = it->path;
+		row[_template_columns.description] = it->description;
 	}
 
 	_export_all_templates_button.set_sensitive (!templates.empty ());
 }
 
 void
-TemplateManager::row_selection_changed ()
+TemplateManager::handle_dirty_description ()
 {
-	bool has_selection = false;
-	if (_template_treeview.get_selection()->count_selected_rows () != 0) {
-		Gtk::TreeModel::const_iterator it = _template_treeview.get_selection()->get_selected ();
-		if (it) {
-			has_selection = true;
+	if (_desc_dirty && _current_selection) {
+		ArdourDialog dlg (_("Description not saved"), true);
+		const string name = _current_selection->get_value (_template_columns.name);
+		Label msg (string_compose (_("The description of template \"%1\" has been modified but has not been saved yet.\n"
+					     "Do you want to save it?"), name));
+		dlg.get_vbox()->pack_start (msg);
+		msg.show ();
+		dlg.add_button (_("Save"), RESPONSE_ACCEPT);
+		dlg.add_button (_("Discard"), RESPONSE_REJECT);
+		dlg.set_default_response (RESPONSE_REJECT);
+
+		int response = dlg.run ();
+
+		if (response == RESPONSE_ACCEPT) {
+			save_template_desc ();
+		} else {
+			_description_editor.get_buffer()->set_text (_current_selection->get_value (_template_columns.description));
 		}
 	}
+}
 
-	_rename_button.set_sensitive (has_selection);
-	_remove_button.set_sensitive (has_selection);
+void
+TemplateManager::row_selection_changed ()
+{
+	if (_current_selection) {
+		handle_dirty_description ();
+	} else {
+		_description_editor.get_buffer()->set_text ("");
+	}
+
+	_current_selection = _template_treeview.get_selection()->get_selected ();
+	if (_current_selection) {
+		const string desc = _current_selection->get_value (_template_columns.description);
+		_description_editor.get_buffer()->set_text (desc);
+	}
+
+	_desc_dirty = false;
+	_save_desc.set_sensitive (false);
+
+	_description_editor.set_sensitive (_current_selection);
+	_rename_button.set_sensitive (_current_selection);
+	_remove_button.set_sensitive (_current_selection);
 }
 
 void
@@ -208,7 +397,54 @@ TemplateManager::start_edit ()
 	TreeModel::Path path;
 	TreeViewColumn* col;
 	_template_treeview.get_cursor (path, col);
+	_cursor_changed_connection.block ();
 	_template_treeview.set_cursor (path, *col, /*set_editing =*/ true);
+	_cursor_changed_connection.unblock ();
+}
+
+void
+TemplateManager::set_desc_dirty ()
+{
+	_desc_dirty = true;
+	_save_desc.set_sensitive (true);
+}
+
+void
+TemplateManager::save_template_desc ()
+{
+	const string file_path = template_file (_current_selection);
+
+	string desc_txt = _description_editor.get_buffer()->get_text ();
+	string::reverse_iterator wss = desc_txt.rbegin();
+	while (wss != desc_txt.rend() && isspace (*wss)) {
+		desc_txt.erase (--(wss++).base());
+	}
+
+	_current_selection->set_value (_template_columns.description, desc_txt);
+
+	XMLTree tree;
+
+	if (!tree.read(file_path)) {
+		error << string_compose (_("Could not parse template file \"%1\"."), file_path) << endmsg;
+		return;
+	}
+
+	tree.root()->remove_nodes_and_delete (X_("description"));
+
+	if (!desc_txt.empty ()) {
+		XMLNode* desc = new XMLNode (X_("description"));
+		XMLNode* dn = new XMLNode (X_("content"), desc_txt);
+		desc->add_child_nocopy (*dn);
+		tree.root()->add_child_nocopy (*desc);
+	}
+
+	if (!tree.write ()) {
+		error << string_compose(X_("Could not write to template file \"%1\"."), file_path) << endmsg;
+		return;
+	}
+
+	_save_desc.set_sensitive (false);
+	_desc_dirty = false;
 }
 
 bool
@@ -226,13 +462,14 @@ TemplateManager::key_event (GdkEventKey* ev)
 	return false;
 }
 
-static
-bool accept_all_files (string const &, void *)
+static bool
+accept_all_files (string const &, void *)
 {
 	return true;
 }
 
-static void _set_progress (Progress* p, size_t n, size_t t)
+static void
+_set_progress (Progress* p, size_t n, size_t t)
 {
 	p->set_progress (float (n) / float(t));
 }
@@ -253,13 +490,13 @@ TemplateManager::export_all_templates ()
 	g_clear_error (&err);
 
 	FileChooserDialog dialog(_("Save Exported Template Archive"), FILE_CHOOSER_ACTION_SAVE);
-	dialog.set_filename (X_("templates.tar.xz"));
+	dialog.set_filename (X_("templates"));
 
 	dialog.add_button(Gtk::Stock::CANCEL, Gtk::RESPONSE_CANCEL);
 	dialog.add_button(Gtk::Stock::OK, Gtk::RESPONSE_OK);
 
 	FileFilter archive_filter;
-	archive_filter.add_pattern (X_("*.tar.xz"));
+	archive_filter.add_pattern (string_compose(X_("*%1"), ARDOUR::template_archive_suffix));
 	archive_filter.set_name (_("Template archives"));
 	dialog.add_filter (archive_filter);
 
@@ -271,9 +508,7 @@ TemplateManager::export_all_templates ()
 	}
 
 	string filename = dialog.get_filename ();
-	if (filename.compare (filename.size () - 7, 7, ".tar.xz")) {
-		filename += ".tar.xz";
-	}
+	filename += ARDOUR::template_archive_suffix;
 
 	if (g_file_test (filename.c_str(), G_FILE_TEST_EXISTS)) {
 		ArdourDialog dlg (_("File exists"), true);
@@ -337,7 +572,7 @@ TemplateManager::import_template_set ()
 	dialog.add_button(Gtk::Stock::OK, Gtk::RESPONSE_OK);
 
 	FileFilter archive_filter;
-	archive_filter.add_pattern (X_("*.tar.xz"));
+	archive_filter.add_pattern (string_compose(X_("*%1"), ARDOUR::template_archive_suffix));
 	archive_filter.set_name (_("Template archives"));
 	dialog.add_filter (archive_filter);
 
@@ -427,23 +662,40 @@ TemplateManager::update_progress_gui (float p)
 	_progress_bar.set_fraction (p);
 }
 
-
-void SessionTemplateManager::init ()
+void
+SessionTemplateManager::init ()
 {
 	vector<TemplateInfo> templates;
-	find_session_templates (templates);
+	get_templates (templates);
 	setup_model (templates);
 
 	_progress_bar.hide ();
+	_description_editor.set_sensitive (false);
+	_save_desc.set_sensitive (false);
 }
 
-void RouteTemplateManager::init ()
+void
+RouteTemplateManager::init ()
 {
 	vector<TemplateInfo> templates;
-	find_route_templates (templates);
+	get_templates (templates);
 	setup_model (templates);
 
 	_progress_bar.hide ();
+	_description_editor.set_sensitive (false);
+	_save_desc.set_sensitive (false);
+}
+
+void
+SessionTemplateManager::get_templates (vector<TemplateInfo>& templates) const
+{
+	find_session_templates (templates, /* read_xml = */ true);
+}
+
+void
+RouteTemplateManager::get_templates (vector<TemplateInfo>& templates) const
+{
+	find_route_templates (templates);
 }
 
 #include <cerrno>
@@ -454,6 +706,10 @@ SessionTemplateManager::rename_template (TreeModel::iterator& item, const Glib::
 	const string old_path = item->get_value (_template_columns.path);
 	const string old_name = item->get_value (_template_columns.name);
 	const string new_name = string (new_name_);
+
+	if (old_name == new_name) {
+		return;
+	}
 
 	const string old_file_old_path = Glib::build_filename (old_path, old_name+".template");
 
@@ -505,27 +761,30 @@ SessionTemplateManager::rename_template (TreeModel::iterator& item, const Glib::
 void
 SessionTemplateManager::delete_selected_template ()
 {
-	if (_template_treeview.get_selection()->count_selected_rows() == 0) {
+	if (!_current_selection) {
 		return;
 	}
 
-	Gtk::TreeModel::const_iterator it = _template_treeview.get_selection()->get_selected();
+	PBD::remove_directory (_current_selection->get_value (_template_columns.path));
 
-	if (!it) {
-		return;
-	}
-
-	PBD::remove_directory (it->get_value (_template_columns.path));
-
-	_template_model->erase (it);
+	_template_model->erase (_current_selection);
+	_current_selection = TreeIter ();
 	row_selection_changed ();
 }
-
 
 string
 SessionTemplateManager::templates_dir () const
 {
 	return user_template_directory ();
+}
+
+
+string
+SessionTemplateManager::template_file (const TreeModel::const_iterator& item) const
+{
+	const string path = item->get_value (_template_columns.path);
+	const string name = item->get_value (_template_columns.name);
+	return Glib::build_filename (path, name+".template");
 }
 
 bool
@@ -555,6 +814,10 @@ RouteTemplateManager::rename_template (TreeModel::iterator& item, const Glib::us
 	const string old_name = item->get_value (_template_columns.name);
 	const string old_filepath = item->get_value (_template_columns.path);
 	const string new_filepath = Glib::build_filename (user_route_template_directory(), new_name+".template");
+
+	if (old_name == new_name) {
+		return;
+	}
 
 	XMLTree tree;
 	if (!tree.read (old_filepath)) {
@@ -599,25 +862,20 @@ RouteTemplateManager::rename_template (TreeModel::iterator& item, const Glib::us
 void
 RouteTemplateManager::delete_selected_template ()
 {
-	if (_template_treeview.get_selection()->count_selected_rows() == 0) {
+	if (!_current_selection) {
 		return;
 	}
 
-	Gtk::TreeModel::const_iterator it = _template_treeview.get_selection()->get_selected();
-
-	if (!it) {
-		return;
-	}
-
-	const string file_path = it->get_value (_template_columns.path);
+	const string file_path = _current_selection->get_value (_template_columns.path);
 
 	if (g_unlink (file_path.c_str()) != 0) {
 		error << string_compose(_("Could not delete template file \"%1\": %2"), file_path, strerror (errno)) << endmsg;
 		return;
 	}
-	PBD::remove_directory (Glib::build_filename (user_route_template_directory (), it->get_value (_template_columns.name)));
+	PBD::remove_directory (Glib::build_filename (user_route_template_directory (),
+						     _current_selection->get_value (_template_columns.name)));
 
-	_template_model->erase (it);
+	_template_model->erase (_current_selection);
 	row_selection_changed ();
 }
 
@@ -625,6 +883,13 @@ string
 RouteTemplateManager::templates_dir () const
 {
 	return user_route_template_directory ();
+}
+
+
+string
+RouteTemplateManager::template_file (const TreeModel::const_iterator& item) const
+{
+	return item->get_value (_template_columns.path);
 }
 
 bool

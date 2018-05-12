@@ -38,6 +38,7 @@
 #include "ardour/midiport_manager.h"
 #include "ardour/port_manager.h"
 #include "ardour/profile.h"
+#include "ardour/rt_tasklist.h"
 #include "ardour/session.h"
 #include "ardour/types_convert.h"
 
@@ -166,11 +167,11 @@ PortManager::port_is_mine (const string& portname) const
 
 	if (portname.find_first_of (':') != string::npos) {
 		if (portname.substr (0, self.length ()) != self) {
-                        return false;
-                }
-        }
+			return false;
+		}
+	}
 
-        return true;
+	return true;
 }
 
 bool
@@ -270,7 +271,6 @@ PortManager::n_physical_inputs () const
 /** @param name Full or short name of port
  *  @return Corresponding Port or 0.
  */
-
 boost::shared_ptr<Port>
 PortManager::get_port_by_name (const string& portname)
 {
@@ -278,10 +278,10 @@ PortManager::get_port_by_name (const string& portname)
 		return boost::shared_ptr<Port>();
 	}
 
-        if (!port_is_mine (portname)) {
-                /* not an ardour port */
-                return boost::shared_ptr<Port> ();
-        }
+	if (!port_is_mine (portname)) {
+		/* not an ardour port */
+		return boost::shared_ptr<Port> ();
+	}
 
 	boost::shared_ptr<Ports> pr = ports.reader();
 	std::string rel = make_port_name_relative (portname);
@@ -289,10 +289,10 @@ PortManager::get_port_by_name (const string& portname)
 
 	if (x != pr->end()) {
 		/* its possible that the port was renamed by some 3rd party and
-		   we don't know about it. check for this (the check is quick
-		   and cheap), and if so, rename the port (which will alter
-		   the port map as a side effect).
-		*/
+		 * we don't know about it. check for this (the check is quick
+		 * and cheap), and if so, rename the port (which will alter
+		 * the port map as a side effect).
+		 */
 		const std::string check = make_port_name_relative (_backend->get_port_name (x->second->port_handle()));
 		if (check != rel) {
 			x->second->set_name (check);
@@ -300,7 +300,7 @@ PortManager::get_port_by_name (const string& portname)
 		return x->second;
 	}
 
-        return boost::shared_ptr<Port> ();
+	return boost::shared_ptr<Port> ();
 }
 
 void
@@ -746,23 +746,59 @@ PortManager::graph_order_callback ()
 }
 
 void
-PortManager::cycle_start (pframes_t nframes)
+PortManager::cycle_start (pframes_t nframes, Session* s)
 {
 	Port::set_global_port_buffer_offset (0);
-        Port::set_cycle_framecnt (nframes);
+	Port::set_cycle_samplecnt (nframes);
 
 	_cycle_ports = ports.reader ();
 
-	for (Ports::iterator p = _cycle_ports->begin(); p != _cycle_ports->end(); ++p) {
-		p->second->cycle_start (nframes);
+	/* TODO optimize
+	 *  - when speed == 1.0, the resampler copies data without processing
+	 *   it may (or may not) be more efficient to just run all in sequence.
+	 *
+	 *  - single sequential task for 'lightweight' tasks would make sense
+	 *    (run it in parallel with 'heavy' resampling.
+	 *    * output ports (sends_output()) only set a flag
+	 *    * midi-ports only scale event timestamps
+	 *
+	 *  - a threshold parallel vs searial processing may be appropriate.
+	 *    amount of work (how many connected ports are there, how
+	 *    many resamplers need to run) vs. available CPU cores and semaphore
+	 *    synchronization overhead.
+	 *
+	 *  - input ports: it would make sense to resample each input only once
+	 *    (rather than resample into each ardour-owned input port).
+	 *    A single external source-port may be connected to many ardour
+	 *    input-ports. Currently re-sampling is per input.
+	 */
+	if (s && s->rt_tasklist () && fabs (Port::speed_ratio ()) != 1.0) {
+		RTTaskList::TaskList tl;
+		for (Ports::iterator p = _cycle_ports->begin(); p != _cycle_ports->end(); ++p) {
+			tl.push_back (boost::bind (&Port::cycle_start, p->second, nframes));
+		}
+		s->rt_tasklist()->process (tl);
+	} else {
+		for (Ports::iterator p = _cycle_ports->begin(); p != _cycle_ports->end(); ++p) {
+			p->second->cycle_start (nframes);
+		}
 	}
 }
 
 void
-PortManager::cycle_end (pframes_t nframes)
+PortManager::cycle_end (pframes_t nframes, Session* s)
 {
-	for (Ports::iterator p = _cycle_ports->begin(); p != _cycle_ports->end(); ++p) {
-		p->second->cycle_end (nframes);
+	// see optimzation note in ::cycle_start()
+	if (s && s->rt_tasklist () && fabs (Port::speed_ratio ()) != 1.0) {
+		RTTaskList::TaskList tl;
+		for (Ports::iterator p = _cycle_ports->begin(); p != _cycle_ports->end(); ++p) {
+			tl.push_back (boost::bind (&Port::cycle_end, p->second, nframes));
+		}
+		s->rt_tasklist()->process (tl);
+	} else {
+		for (Ports::iterator p = _cycle_ports->begin(); p != _cycle_ports->end(); ++p) {
+			p->second->cycle_end (nframes);
+		}
 	}
 
 	for (Ports::iterator p = _cycle_ports->begin(); p != _cycle_ports->end(); ++p) {
@@ -853,13 +889,27 @@ PortManager::check_monitoring ()
 }
 
 void
-PortManager::fade_out (gain_t base_gain, gain_t gain_step, pframes_t nframes)
+PortManager::cycle_end_fade_out (gain_t base_gain, gain_t gain_step, pframes_t nframes, Session* s)
 {
-	for (Ports::iterator i = _cycle_ports->begin(); i != _cycle_ports->end(); ++i) {
+	// see optimzation note in ::cycle_start()
+	if (s && s->rt_tasklist () && fabs (Port::speed_ratio ()) != 1.0) {
+		RTTaskList::TaskList tl;
+		for (Ports::iterator p = _cycle_ports->begin(); p != _cycle_ports->end(); ++p) {
+			tl.push_back (boost::bind (&Port::cycle_end, p->second, nframes));
+		}
+		s->rt_tasklist()->process (tl);
+	} else {
+		for (Ports::iterator p = _cycle_ports->begin(); p != _cycle_ports->end(); ++p) {
+			p->second->cycle_end (nframes);
+		}
+	}
 
-		if (i->second->sends_output()) {
+	for (Ports::iterator p = _cycle_ports->begin(); p != _cycle_ports->end(); ++p) {
+		p->second->flush_buffers (nframes);
 
-			boost::shared_ptr<AudioPort> ap = boost::dynamic_pointer_cast<AudioPort> (i->second);
+		if (p->second->sends_output()) {
+
+			boost::shared_ptr<AudioPort> ap = boost::dynamic_pointer_cast<AudioPort> (p->second);
 			if (ap) {
 				Sample* s = ap->engine_get_whole_audio_buffer ();
 				gain_t g = base_gain;
@@ -871,6 +921,8 @@ PortManager::fade_out (gain_t base_gain, gain_t gain_step, pframes_t nframes)
 			}
 		}
 	}
+	_cycle_ports.reset ();
+	/* we are done */
 }
 
 PortEngine&
@@ -897,6 +949,9 @@ PortManager::port_is_control_only (std::string const& name)
 			X_(".*Ableton Push.*"),
 			X_(".*FaderPort .*"),
 			X_(".*FaderPort8 .*"),
+			X_(".*FaderPort16 .*"),
+			X_(".*US-2400 .*"),
+			X_(".*Mackie .*"),
 		};
 
 		pattern = "(";

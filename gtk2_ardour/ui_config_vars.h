@@ -32,6 +32,8 @@ UI_CONFIG_VARIABLE (bool, color_regions_using_track_color, "color-regions-using-
 UI_CONFIG_VARIABLE (bool, show_waveform_clipping, "show-waveform-clipping", true)
 UI_CONFIG_VARIABLE (uint32_t, lock_gui_after_seconds, "lock-gui-after-seconds", 0)
 UI_CONFIG_VARIABLE (bool, draggable_playhead, "draggable-playhead", true)
+UI_CONFIG_VARIABLE (float, draggable_playhead_speed, "draggable-playhead-speed", 1.0)
+UI_CONFIG_VARIABLE (float, extra_ui_extents_time, "extra-ui-extents-time", 1.0)
 UI_CONFIG_VARIABLE (bool, new_automation_points_on_lane, "new-automation-points-on-lane", false)
 UI_CONFIG_VARIABLE (std::string, keyboard_layout, "keyboard-layout", "ansi")
 UI_CONFIG_VARIABLE (std::string, keyboard_layout_name, "keyboard-layout-name", "ansi")
@@ -60,8 +62,8 @@ UI_CONFIG_VARIABLE (std::string, mixer_strip_visibility, "mixer-element-visibili
 UI_CONFIG_VARIABLE (bool, allow_non_quarter_pulse, "allow-non-quarter-pulse", false)
 UI_CONFIG_VARIABLE (bool, show_region_gain, "show-region-gain", false)
 UI_CONFIG_VARIABLE (bool, show_name_highlight, "show-name-highlight", false)
-UI_CONFIG_VARIABLE (bool, primary_clock_delta_edit_cursor, "primary-clock-delta-edit-cursor", false)
-UI_CONFIG_VARIABLE (bool, secondary_clock_delta_edit_cursor, "secondary-clock-delta-edit-cursor", false)
+UI_CONFIG_VARIABLE (ARDOUR::ClockDeltaMode, primary_clock_delta_mode, "primary-clock-delta-mode", NoDelta)
+UI_CONFIG_VARIABLE (ARDOUR::ClockDeltaMode, secondary_clock_delta_mode, "secondary-clock-delta-mode", NoDelta)
 UI_CONFIG_VARIABLE (uint64_t, clock_display_limit, "clock-display-limit", 2592000) /* seconds; default 30days (720h), 0 = unlimited */
 UI_CONFIG_VARIABLE (bool, show_track_meters, "show-track-meters", true)
 UI_CONFIG_VARIABLE (bool, editor_stereo_only_meters, "editor-stereo-only-meters", false)
@@ -96,3 +98,11 @@ UI_CONFIG_VARIABLE (bool, prefer_inline_over_gui, "prefer-inline-over-gui", true
 UI_CONFIG_VARIABLE (uint32_t, action_table_columns, "action-table-columns", 0)
 UI_CONFIG_VARIABLE (bool, use_wm_visibility, "use-wm-visibility", true)
 UI_CONFIG_VARIABLE (std::string, stripable_color_palette, "stripable-color-palette", "#AA3939:#FFAAAA:#D46A6A:#801515:#550000:#AA8E39:#FFEAAA:#D4BA6A:#806515:#554000:#343477:#8080B3:#565695:#1A1A59:#09093B:#2D882D:#88CC88:#55AA55:#116611:#004400")  /* Gtk::ColorSelection::palette_to_string */
+
+UI_CONFIG_VARIABLE (bool, show_snapped_cursor, "show-snapped-cursor", true)
+UI_CONFIG_VARIABLE (uint32_t, snap_threshold, "snap-threshold", 25)
+UI_CONFIG_VARIABLE (bool, snap_to_marks, "snap-to-marks", true)
+UI_CONFIG_VARIABLE (bool, snap_to_region_sync, "snap-to-region-sync", true)
+UI_CONFIG_VARIABLE (bool, snap_to_region_start, "snap-to-region-start", true)
+UI_CONFIG_VARIABLE (bool, snap_to_region_end, "snap-to-region-end", true)
+UI_CONFIG_VARIABLE (bool, snap_to_grid, "snap-to-grid", true)

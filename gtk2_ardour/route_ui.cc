@@ -66,10 +66,12 @@
 #include "keyboard.h"
 #include "latency_gui.h"
 #include "mixer_strip.h"
+#include "patch_change_widget.h"
 #include "plugin_pin_dialog.h"
 #include "rgb_macros.h"
 #include "route_time_axis.h"
 #include "route_ui.h"
+#include "save_template_dialog.h"
 #include "timers.h"
 #include "ui_config.h"
 #include "utils.h"
@@ -119,6 +121,8 @@ RouteUI::~RouteUI()
 	if (_route) {
 		ARDOUR_UI::instance()->gui_object_state->remove_node (route_state_id());
 	}
+
+	delete_patch_change_dialog ();
 
 	_route.reset (); /* drop reference to route, so that it can be cleaned up */
 	route_connections.drop_connections ();
@@ -245,6 +249,7 @@ RouteUI::reset ()
 	delete mute_menu;
 	mute_menu = 0;
 
+	delete_patch_change_dialog ();
 	_color_picker.reset ();
 
 	denormal_menu_item = 0;
@@ -328,9 +333,6 @@ RouteUI::set_route (boost::shared_ptr<Route> rp)
 
 	if (is_track()) {
 		track()->FreezeChange.connect (*this, invalidator (*this), boost::bind (&RouteUI::map_frozen, this), gui_context());
-#ifdef XXX_OLD_DESTRUCTIVE_API_XXX
-		track()->TrackModeChanged.connect (route_connections, invalidator (*this), boost::bind (&RouteUI::track_mode_changed, this), gui_context());
-#endif
 		track_mode_changed();
 	}
 
@@ -497,7 +499,7 @@ RouteUI::mute_press (GdkEventButton* ev)
 					}
 
 					boost::shared_ptr<MuteControl> mc = _route->mute_control();
-					mc->start_touch (_session->audible_frame ());
+					mc->start_touch (_session->audible_sample ());
 					_session->set_controls (route_list_to_control_list (rl, &Stripable::mute_control), _route->muted_by_self() ? 0.0 : 1.0, Controllable::InverseGroup);
 				}
 
@@ -513,7 +515,7 @@ RouteUI::mute_press (GdkEventButton* ev)
 				}
 
 				boost::shared_ptr<MuteControl> mc = _route->mute_control();
-				mc->start_touch (_session->audible_frame ());
+				mc->start_touch (_session->audible_sample ());
 				mc->set_value (!_route->muted_by_self(), Controllable::UseGroup);
 			}
 		}
@@ -531,7 +533,7 @@ RouteUI::mute_release (GdkEventButton* /*ev*/)
 		_mute_release = 0;
 	}
 
-	_route->mute_control()->stop_touch (_session->audible_frame ());
+	_route->mute_control()->stop_touch (_session->audible_sample ());
 
 	return false;
 }
@@ -904,17 +906,10 @@ RouteUI::monitor_release (GdkEventButton* ev, MonitorChoice monitor_choice)
 	MonitorChoice mc;
 	boost::shared_ptr<RouteList> rl;
 
-	/* XXX for now, monitoring choices are orthogonal. cue monitoring
-	   will follow in 3.X but requires mixing the input and playback (disk)
-	   signal together, which requires yet more buffers.
-	*/
-
 	if (t->monitoring_control()->monitoring_choice() & monitor_choice) {
 		mc = MonitorChoice (t->monitoring_control()->monitoring_choice() & ~monitor_choice);
 	} else {
-		/* this line will change when the options are non-orthogonal */
-		// mc = MonitorChoice (t->monitoring_choice() | monitor_choice);
-		mc = monitor_choice;
+		mc = MonitorChoice (t->monitoring_control()->monitoring_choice() | monitor_choice);
 	}
 
 	if (Keyboard::modifier_state_equals (ev->state, Keyboard::ModifierMask (Keyboard::PrimaryModifier|Keyboard::TertiaryModifier))) {
@@ -1615,6 +1610,39 @@ RouteUI::toggle_solo_safe (Gtk::CheckMenuItem* check)
 	_route->solo_safe_control()->set_value (check->get_active() ? 1.0 : 0.0, Controllable::UseGroup);
 }
 
+void
+RouteUI::delete_patch_change_dialog ()
+{
+	if (!_route) {
+		return;
+	}
+	delete _route->patch_selector_dialog ();
+	_route->set_patch_selector_dialog (0);
+}
+
+PatchChangeGridDialog*
+RouteUI::patch_change_dialog () const
+{
+	return _route->patch_selector_dialog ();
+}
+
+void
+RouteUI::select_midi_patch ()
+{
+	if (patch_change_dialog ()) {
+		patch_change_dialog()->present ();
+		return;
+	}
+
+	/* note: RouteTimeAxisView is resoponsible to updating
+	 * the Dialog (PatchChangeGridDialog::refresh())
+	 * when the midnam model changes.
+	 */
+	PatchChangeGridDialog* d = new PatchChangeGridDialog (_route);
+	_route->set_patch_selector_dialog (d);
+	d->present ();
+}
+
 /** Ask the user to choose a colour, and then apply that color to my route */
 void
 RouteUI::choose_color ()
@@ -1892,67 +1920,47 @@ RouteUI::map_frozen ()
 void
 RouteUI::adjust_latency ()
 {
-	LatencyDialog dialog (_route->name() + _(" latency"), *(_route->output()), _session->frame_rate(), AudioEngine::instance()->samples_per_cycle());
+	LatencyDialog dialog (_route->name() + _(" latency"), *(_route->output()), _session->sample_rate(), AudioEngine::instance()->samples_per_cycle());
 }
 
-bool
-RouteUI::process_save_template_prompter (Prompter& prompter, const std::string& dir)
+
+void
+RouteUI::save_as_template_dialog_response (int response, SaveTemplateDialog* d)
 {
-	std::string path;
-	std::string safe_name;
-	std::string name;
+	if (response == RESPONSE_ACCEPT) {
+		const string name = d->get_template_name ();
+		const string desc = d->get_description ();
+		const string path = Glib::build_filename(ARDOUR::user_route_template_directory (), name + ARDOUR::template_suffix);
 
-	prompter.get_result (name, true);
+		if (Glib::file_test (path, Glib::FILE_TEST_EXISTS)) { /* file already exists. */
+			bool overwrite = overwrite_file_dialog (*d,
+								_("Confirm Template Overwrite"),
+								_("A template already exists with that name. Do you want to overwrite it?"));
 
-	safe_name = legalize_for_path (name);
-	safe_name += template_suffix;
-
-	path = Glib::build_filename (dir, safe_name);
-
-	if (Glib::file_test (path, Glib::FILE_TEST_EXISTS)) {
-		bool overwrite = overwrite_file_dialog (prompter,
-		                                        _("Confirm Template Overwrite"),
-							_("A template already exists with that name. Do you want to overwrite it?"));
-
-		if (!overwrite) {
-			return false;
+			if (!overwrite) {
+				d->show ();
+				return;
+			}
 		}
+		_route->save_as_template (path, name, desc);
 	}
 
-	_route->save_as_template (path, name);
-
-	return true;
+	delete d;
 }
 
 void
 RouteUI::save_as_template ()
 {
-	std::string dir;
-
-	dir = ARDOUR::user_route_template_directory ();
+	const std::string dir = ARDOUR::user_route_template_directory ();
 
 	if (g_mkdir_with_parents (dir.c_str(), 0755)) {
 		error << string_compose (_("Cannot create route template directory %1"), dir) << endmsg;
 		return;
 	}
 
-	Prompter prompter (true); // modal
-
-	prompter.set_title (_("Save As Template"));
-	prompter.set_prompt (_("Template name:"));
-	prompter.add_button (Gtk::Stock::SAVE, Gtk::RESPONSE_ACCEPT);
-
-	bool finished = false;
-	while (!finished) {
-		switch (prompter.run()) {
-		case RESPONSE_ACCEPT:
-			finished = process_save_template_prompter (prompter, dir);
-			break;
-		default:
-			finished = true;
-			break;
-		}
-	}
+	SaveTemplateDialog* d = new SaveTemplateDialog (_route->name(), _route->comment());
+	d->signal_response().connect (sigc::bind (sigc::mem_fun (*this, &RouteUI::save_as_template_dialog_response), d));
+	d->show ();
 }
 
 void
@@ -2419,3 +2427,10 @@ RouteUI::stripable () const
 	return _route;
 }
 
+void
+RouteUI::set_disk_io_point (DiskIOPoint diop)
+{
+	if (_route && is_track()) {
+		track()->set_disk_io_point (diop);
+	}
+}

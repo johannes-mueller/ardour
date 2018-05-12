@@ -524,13 +524,13 @@ DummyAudioBackend::raw_buffer_size (DataType t)
 }
 
 /* Process time */
-framepos_t
+samplepos_t
 DummyAudioBackend::sample_time ()
 {
 	return _processed_samples;
 }
 
-framepos_t
+samplepos_t
 DummyAudioBackend::sample_time_at_cycle_start ()
 {
 	return _processed_samples;
@@ -953,6 +953,24 @@ DummyAudioBackend::unregister_ports (bool system_only)
 			delete port;
 			_ports.erase (cur);
 		}
+	}
+}
+
+void
+DummyAudioBackend::update_system_port_latecies ()
+{
+	for (std::vector<DummyAudioPort*>::const_iterator it = _system_inputs.begin (); it != _system_inputs.end (); ++it) {
+		(*it)->update_connected_latency (true);
+	}
+	for (std::vector<DummyAudioPort*>::const_iterator it = _system_outputs.begin (); it != _system_outputs.end (); ++it) {
+		(*it)->update_connected_latency (false);
+	}
+
+	for (std::vector<DummyMidiPort*>::const_iterator it = _system_midi_in.begin (); it != _system_midi_in.end (); ++it) {
+		(*it)->update_connected_latency (true);
+	}
+	for (std::vector<DummyMidiPort*>::const_iterator it = _system_midi_out.begin (); it != _system_midi_out.end (); ++it) {
+		(*it)->update_connected_latency (false);
 	}
 }
 
@@ -1400,6 +1418,7 @@ DummyAudioBackend::main_process_thread ()
 			manager.graph_order_callback();
 		}
 		if (connections_changed || ports_changed) {
+			update_system_port_latecies ();
 			engine.latency_callback(false);
 			engine.latency_callback(true);
 		}
@@ -1598,6 +1617,36 @@ bool DummyPort::is_physically_connected () const
 		}
 	}
 	return false;
+}
+
+void
+DummyPort::set_latency_range (const LatencyRange &latency_range, bool for_playback)
+{
+	if (for_playback) {
+		_playback_latency_range = latency_range;
+	} else {
+		_capture_latency_range = latency_range;
+	}
+
+	for (std::set<DummyPort*>::const_iterator it = _connections.begin (); it != _connections.end (); ++it) {
+		if ((*it)->is_physical ()) {
+			(*it)->update_connected_latency (is_input ());
+		}
+	}
+}
+
+void
+DummyPort::update_connected_latency (bool for_playback)
+{
+	LatencyRange lr;
+	lr.min = lr.max = 0;
+	for (std::set<DummyPort*>::const_iterator it = _connections.begin (); it != _connections.end (); ++it) {
+		LatencyRange l;
+		l = (*it)->latency_range (for_playback);
+		lr.min = std::max (lr.min, l.min);
+		lr.max = std::max (lr.max, l.max);
+	}
+	set_latency_range (lr, for_playback);
 }
 
 void DummyPort::setup_random_number_generator ()
@@ -1839,10 +1888,10 @@ DummyAudioPort::setup_generator (GeneratorType const g, float const samplerate, 
 			tc.frame = 0;
 			ltc_encoder_set_timecode (_ltc, &tc);
 					name += string_compose ("@%1h", (int)tc.hours);
-			_ltcbuf = new RingBuffer<Sample> (std::max (DummyAudioBackend::max_buffer_size() * 2.f, samplerate));
+			_ltcbuf = new PBD::RingBuffer<Sample> (std::max (DummyAudioBackend::max_buffer_size() * 2.f, samplerate));
 			break;
 		case Loopback:
-			_wavetable = (Sample*) malloc (DummyAudioBackend::max_buffer_size() * sizeof(Sample));
+			_wavetable = (Sample*) calloc (DummyAudioBackend::max_buffer_size(), sizeof(Sample));
 			break;
 	}
 	return name;
@@ -1902,19 +1951,19 @@ float DummyAudioPort::grandf ()
 
 /* inspired by jack-demolition by Steve Harris */
 static const float _demolition[] = {
-	 0.0f,           /* special case - 0dbFS white noise */
-	 0.0f,           /* zero, may cause denomrals following a signal */
-	 0.73 / 1e45,    /* very small - should be denormal when floated */
-	 3.7f,           /* arbitrary number > 0dBFS */
-	-4.3f,           /* arbitrary negative number > 0dBFS */
-	 4294967395.0f,  /* 2^16 + 100 */
+	 0.0f,             /* special case - 0dbFS white noise */
+	 0.0f,             /* zero, may cause denomrals following a signal */
+	 0.73 / 1e45,      /* very small - should be denormal when floated */
+	 3.7f,             /* arbitrary number > 0dBFS */
+	-4.3f,             /* arbitrary negative number > 0dBFS */
+	 4294967395.0f,    /* 2^16 + 100 */
 	-4294967395.0f,
-	 HUGE,           /* Big, non-inf number */
-	 INFINITY,       /* +inf */
-	-INFINITY,       /* -inf */
-	-NAN,            /* -nan */
-	 NAN,            /*  nan */
-	 0.0f,           /* some silence to check for recovery */
+	 3.402823466e+38F, /* HUGE, HUGEVALF, non-inf number */
+	 INFINITY,         /* +inf */
+	-INFINITY,         /* -inf */
+	-NAN,              /* -nan */
+	 NAN,              /*  nan */
+	 0.0f,             /* some silence to check for recovery */
 };
 
 void DummyAudioPort::generate (const pframes_t n_samples)

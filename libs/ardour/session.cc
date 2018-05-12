@@ -51,7 +51,6 @@
 #include "ardour/analyser.h"
 #include "ardour/async_midi_port.h"
 #include "ardour/audio_buffer.h"
-#include "ardour/audio_diskstream.h"
 #include "ardour/audio_port.h"
 #include "ardour/audio_track.h"
 #include "ardour/audioengine.h"
@@ -66,6 +65,7 @@
 #include "ardour/control_protocol_manager.h"
 #include "ardour/data_type.h"
 #include "ardour/debug.h"
+#include "ardour/disk_reader.h"
 #include "ardour/directory_names.h"
 #ifdef USE_TRACKS_CODE_FEATURES
 #include "ardour/engine_state_controller.h"
@@ -93,6 +93,7 @@
 #include "ardour/revision.h"
 #include "ardour/route_graph.h"
 #include "ardour/route_group.h"
+#include "ardour/rt_tasklist.h"
 #include "ardour/send.h"
 #include "ardour/selection.h"
 #include "ardour/session.h"
@@ -100,6 +101,7 @@
 #include "ardour/session_playlists.h"
 #include "ardour/slave.h"
 #include "ardour/smf_source.h"
+#include "ardour/slave.h"
 #include "ardour/solo_isolate_control.h"
 #include "ardour/source_factory.h"
 #include "ardour/speakers.h"
@@ -138,13 +140,13 @@ guint Session::_name_id_counter = 0;
 PBD::Signal1<int,uint32_t> Session::AudioEngineSetupRequired;
 PBD::Signal1<void,std::string> Session::Dialog;
 PBD::Signal0<int> Session::AskAboutPendingState;
-PBD::Signal2<int, framecnt_t, framecnt_t> Session::AskAboutSampleRateMismatch;
-PBD::Signal2<void, framecnt_t, framecnt_t> Session::NotifyAboutSampleRateMismatch;
+PBD::Signal2<int, samplecnt_t, samplecnt_t> Session::AskAboutSampleRateMismatch;
+PBD::Signal2<void, samplecnt_t, samplecnt_t> Session::NotifyAboutSampleRateMismatch;
 PBD::Signal0<void> Session::SendFeedback;
 PBD::Signal3<int,Session*,std::string,DataType> Session::MissingFile;
 
-PBD::Signal1<void, framepos_t> Session::StartTimeChanged;
-PBD::Signal1<void, framepos_t> Session::EndTimeChanged;
+PBD::Signal1<void, samplepos_t> Session::StartTimeChanged;
+PBD::Signal1<void, samplepos_t> Session::EndTimeChanged;
 PBD::Signal2<void,std::string, std::string> Session::Exported;
 PBD::Signal1<int,boost::shared_ptr<Playlist> > Session::AskAboutPlaylistDeletion;
 PBD::Signal0<void> Session::Quit;
@@ -152,7 +154,7 @@ PBD::Signal0<void> Session::FeedbackDetected;
 PBD::Signal0<void> Session::SuccessfulGraphSort;
 PBD::Signal2<void,std::string,std::string> Session::VersionMismatch;
 
-const framecnt_t Session::bounce_chunk_size = 8192;
+const samplecnt_t Session::bounce_chunk_size = 8192;
 static void clean_up_session_event (SessionEvent* ev) { delete ev; }
 const SessionEvent::RTeventCallback Session::rt_cleanup (clean_up_session_event);
 
@@ -174,29 +176,32 @@ Session::Session (AudioEngine &eng,
 	, process_function (&Session::process_with_events)
 	, _bounce_processing_active (false)
 	, waiting_for_sync_offset (false)
-	, _base_frame_rate (0)
-	, _nominal_frame_rate (0)
-	, _current_frame_rate (0)
+	, _base_sample_rate (0)
+	, _nominal_sample_rate (0)
+	, _current_sample_rate (0)
 	, transport_sub_state (0)
 	, _record_status (Disabled)
-	, _transport_frame (0)
+	, _transport_sample (0)
+	, _seek_counter (0)
 	, _session_range_location (0)
 	, _session_range_end_is_free (true)
 	, _slave (0)
 	, _silent (false)
+	, _remaining_latency_preroll (0)
+	, _engine_speed (1.0)
 	, _transport_speed (0)
 	, _default_transport_speed (1.0)
 	, _last_transport_speed (0)
 	, _signalled_varispeed (0)
 	, _target_transport_speed (0.0)
 	, auto_play_legal (false)
-	, _last_slave_transport_frame (0)
-	, maximum_output_latency (0)
-	, _requested_return_frame (-1)
+	, _last_slave_transport_sample (0)
+	, _requested_return_sample (-1)
 	, current_block_size (0)
 	, _worst_output_latency (0)
 	, _worst_input_latency (0)
-	, _worst_track_latency (0)
+	, _worst_route_latency (0)
+	, _send_latency_changes (0)
 	, _have_captured (false)
 	, _non_soloed_outs_muted (false)
 	, _listening (false)
@@ -220,7 +225,6 @@ Session::Session (AudioEngine &eng,
 	, _realtime_export (false)
 	, _region_export (false)
 	, _export_preroll (0)
-	, _export_latency (0)
 	, _pre_export_mmc_enabled (false)
 	, _name (snapshot_name)
 	, _is_new (true)
@@ -240,7 +244,7 @@ Session::Session (AudioEngine &eng,
 	, _last_roll_or_reversal_location (0)
 	, _last_record_location (0)
 	, pending_locate_roll (false)
-	, pending_locate_frame (0)
+	, pending_locate_sample (0)
 	, pending_locate_flush (false)
 	, pending_abort (false)
 	, pending_auto_loop (false)
@@ -309,7 +313,6 @@ Session::Session (AudioEngine &eng,
 	, _play_range (false)
 	, _range_selection (-1,-1)
 	, _object_selection (-1,-1)
-	, _preroll_record_punch_pos (-1)
 	, _preroll_record_trim_len (0)
 	, _count_in_once (false)
 	, main_outs (0)
@@ -328,6 +331,7 @@ Session::Session (AudioEngine &eng,
 	, _mmc (0)
 	, _vca_manager (new VCAManager (*this))
 	, _selection (new CoreSelection (*this))
+	, _global_locate_pending (false)
 {
 	uint32_t sr = 0;
 
@@ -361,7 +365,7 @@ Session::Session (AudioEngine &eng,
 		// set samplerate for plugins added early
 		// e.g from templates or MB channelstrip
 		set_block_size (_engine.samples_per_cycle());
-		set_frame_rate (_engine.sample_rate());
+		set_sample_rate (_engine.sample_rate());
 
 		if (create (mix_template, bus_profile)) {
 			destroy ();
@@ -380,8 +384,12 @@ Session::Session (AudioEngine &eng,
 		 */
 
 		if (!mix_template.empty()) {
-			if (load_state (_current_snapshot_name)) {
-				throw SessionException (_("Failed to load template/snapshot state"));
+			try {
+				if (load_state (_current_snapshot_name)) {
+					throw SessionException (_("Failed to load template/snapshot state"));
+				}
+			} catch (PBD::unknown_enumeration& e) {
+				throw SessionException (_("Failed to parse template/snapshot state"));
 			}
 			store_recent_templates (mix_template);
 		}
@@ -454,6 +462,8 @@ Session::Session (AudioEngine &eng,
 
 	StartTimeChanged.connect_same_thread (*this, boost::bind (&Session::start_time_changed, this, _1));
 	EndTimeChanged.connect_same_thread (*this, boost::bind (&Session::end_time_changed, this, _1));
+
+	Send::ChangedLatency.connect_same_thread (*this, boost::bind (&Session::send_latency_compensation_change, this));
 
 	emit_thread_start ();
 	auto_connect_thread_start ();
@@ -591,6 +601,8 @@ Session::immediately_post_engine ()
 	 * session or set state for an existing one.
 	 */
 
+	_rt_tasklist.reset (new RTTaskList ());
+
 	if (how_many_dsp_threads () > 1) {
 		/* For now, only create the graph if we are using >1 DSP threads, as
 		   it is a bit slower than the old code with 1 thread.
@@ -607,7 +619,7 @@ Session::immediately_post_engine ()
 	}
 
 	if (config.get_jack_time_master()) {
-		_engine.transport_locate (_transport_frame);
+		_engine.transport_locate (_transport_sample);
 	}
 
 	try {
@@ -679,6 +691,12 @@ Session::destroy ()
 	EngineStateController::instance()->remove_session();
 #endif
 
+	/* drop slave, if any. We don't use use_sync_source (0) because
+	 * there's no reason to do all the other stuff that may happen
+	 * when calling that method.
+	 */
+	delete _slave;
+
 	/* deregister all ports - there will be no process or any other
 	 * callbacks from the engine any more.
 	 */
@@ -734,7 +752,13 @@ Session::destroy ()
 	clear_clicks ();
 
 	/* need to remove auditioner before monitoring section
-	 * otherwise it is re-connected */
+	 * otherwise it is re-connected.
+	 * Note: If a session was never successfully loaded, there
+	 * may not yet be an auditioner.
+	 */
+	if (auditioner) {
+		auditioner->drop_references ();
+	}
 	auditioner.reset ();
 
 	/* drop references to routes held by the monitoring section
@@ -746,7 +770,7 @@ Session::destroy ()
 	routes.flush ();
 	_bundles.flush ();
 
-	AudioDiskstream::free_working_buffers();
+	DiskReader::free_working_buffers();
 
 	/* tell everyone who is still standing that we're about to die */
 	drop_references ();
@@ -830,7 +854,6 @@ Session::destroy ()
 			case SessionEvent::Skip:
 			case SessionEvent::PunchIn:
 			case SessionEvent::PunchOut:
-			case SessionEvent::RecordStart:
 			case SessionEvent::StopOnce:
 			case SessionEvent::RangeStop:
 			case SessionEvent::RangeLocate:
@@ -1542,7 +1565,6 @@ Session::hookup_io ()
 			if (a->init()) {
 				throw failed_constructor ();
 			}
-			a->use_new_diskstream ();
 			auditioner = a;
 		}
 
@@ -1637,7 +1659,7 @@ Session::auto_punch_start_changed (Location* location)
 {
 	replace_event (SessionEvent::PunchIn, location->start());
 
-	if (get_record_enabled() && config.get_punch_in()) {
+	if (get_record_enabled() && config.get_punch_in() && !actively_recording ()) {
 		/* capture start has been changed, so save new pending state */
 		save_state ("", true);
 	}
@@ -1646,27 +1668,22 @@ Session::auto_punch_start_changed (Location* location)
 void
 Session::auto_punch_end_changed (Location* location)
 {
-	framepos_t when_to_stop = location->end();
-	// when_to_stop += _worst_output_latency + _worst_input_latency;
-	replace_event (SessionEvent::PunchOut, when_to_stop);
+	replace_event (SessionEvent::PunchOut, location->end());
 }
 
 void
 Session::auto_punch_changed (Location* location)
 {
-	framepos_t when_to_stop = location->end();
-
-	replace_event (SessionEvent::PunchIn, location->start());
-	//when_to_stop += _worst_output_latency + _worst_input_latency;
-	replace_event (SessionEvent::PunchOut, when_to_stop);
+	auto_punch_start_changed (location);
+	auto_punch_end_changed (location);
 }
 
 /** @param loc A loop location.
- *  @param pos Filled in with the start time of the required fade-out (in session frames).
+ *  @param pos Filled in with the start time of the required fade-out (in session samples).
  *  @param length Filled in with the length of the required fade-out.
  */
 void
-Session::auto_loop_declick_range (Location* loc, framepos_t & pos, framepos_t & length)
+Session::auto_loop_declick_range (Location* loc, samplepos_t & pos, samplepos_t & length)
 {
 	pos = max (loc->start(), loc->end() - 64);
 	length = loc->end() - pos;
@@ -1676,17 +1693,17 @@ void
 Session::auto_loop_changed (Location* location)
 {
 	replace_event (SessionEvent::AutoLoop, location->end(), location->start());
-	framepos_t dcp;
-	framecnt_t dcl;
+	samplepos_t dcp;
+	samplecnt_t dcl;
 	auto_loop_declick_range (location, dcp, dcl);
 
 	if (transport_rolling() && play_loop) {
 
 		replace_event (SessionEvent::AutoLoopDeclick, dcp, dcl);
 
-		// if (_transport_frame > location->end()) {
+		// if (_transport_sample > location->end()) {
 
-		if (_transport_frame < location->start() || _transport_frame > location->end()) {
+		if (_transport_sample < location->start() || _transport_sample > location->end()) {
 			// relocate to beginning of loop
 			clear_events (SessionEvent::LocateRoll);
 
@@ -1695,7 +1712,7 @@ Session::auto_loop_changed (Location* location)
 		}
 		else if (Config->get_seamless_loop() && !loop_changing) {
 
-			// schedule a locate-roll to refill the diskstreams at the
+			// schedule a locate-roll to refill the disk readers at the
 			// previous loop end
 			loop_changing = true;
 
@@ -1715,7 +1732,7 @@ Session::auto_loop_changed (Location* location)
 	   to the loop start on stop if that is appropriate.
 	 */
 
-	framepos_t pos;
+	samplepos_t pos;
 
 	if (!transport_rolling() && select_playhead_priority_target (pos)) {
 		if (pos == location->start()) {
@@ -1736,7 +1753,7 @@ Session::set_auto_punch_location (Location* location)
 	if ((existing = _locations->auto_punch_location()) != 0 && existing != location) {
 		punch_connections.drop_connections();
 		existing->set_auto_punch (false, this);
-		remove_event (existing->start(), SessionEvent::PunchIn);
+		clear_events (SessionEvent::PunchIn);
 		clear_events (SessionEvent::PunchOut);
 		auto_punch_location_changed (0);
 	}
@@ -1766,7 +1783,7 @@ Session::set_auto_punch_location (Location* location)
 }
 
 void
-Session::set_session_extents (framepos_t start, framepos_t end)
+Session::set_session_extents (samplepos_t start, samplepos_t end)
 {
 	Location* existing;
 	if ((existing = _locations->session_range_location()) == 0) {
@@ -1793,8 +1810,8 @@ Session::set_auto_loop_location (Location* location)
 		loop_connections.drop_connections ();
 		existing->set_auto_loop (false, this);
 		remove_event (existing->end(), SessionEvent::AutoLoop);
-		framepos_t dcp;
-		framecnt_t dcl;
+		samplepos_t dcp;
+		samplecnt_t dcl;
 		auto_loop_declick_range (existing, dcp, dcl);
 		remove_event (dcp, SessionEvent::AutoLoopDeclick);
 		auto_loop_location_changed (0);
@@ -1827,7 +1844,7 @@ Session::set_auto_loop_location (Location* location)
 		boost::shared_ptr<RouteList> rl = routes.reader ();
 		for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
 			boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
-			if (tr && !tr->hidden()) {
+			if (tr && !tr->is_private_route()) {
 				tr->set_loop (location);
 			}
 		}
@@ -2055,7 +2072,7 @@ Session::enable_record ()
 
 		if (g_atomic_int_compare_and_exchange (&_record_status, rs, Recording)) {
 
-			_last_record_location = _transport_frame;
+			_last_record_location = _transport_sample;
 			send_immediate_mmc (MIDI::MachineControlCommand (MIDI::MachineControl::cmdRecordStrobe));
 
 			if (Config->get_monitoring_model() == HardwareMonitoring && config.get_auto_input()) {
@@ -2100,7 +2117,6 @@ Session::disable_record (bool rt_context, bool force)
 		if (!rt_context) {
 			remove_pending_capture_state ();
 		}
-		unset_preroll_record_punch ();
 	}
 }
 
@@ -2138,7 +2154,7 @@ Session::maybe_enable_record (bool rt_context)
 	}
 
 	if (_transport_speed) {
-		if (!config.get_punch_in() && !preroll_record_punch_enabled ()) {
+		if (!config.get_punch_in()) {
 			enable_record ();
 		}
 	} else {
@@ -2149,107 +2165,85 @@ Session::maybe_enable_record (bool rt_context)
 	set_dirty();
 }
 
-framepos_t
-Session::audible_frame (bool* latent_locate) const
+samplepos_t
+Session::audible_sample (bool* latent_locate) const
 {
-	framepos_t ret;
-
-	frameoffset_t offset = worst_playback_latency (); // - _engine.samples_since_cycle_start ();
-	offset *= transport_speed ();
 	if (latent_locate) {
 		*latent_locate = false;
 	}
 
+	samplepos_t ret;
+
 	if (synced_to_engine()) {
 		/* Note: this is basically just sync-to-JACK */
-		ret = _engine.transport_frame();
+		ret = _engine.transport_sample();
 	} else {
-		ret = _transport_frame;
+		ret = _transport_sample;
 	}
 
-	if (transport_rolling()) {
-		ret -= offset;
+	assert (ret >= 0);
 
-		/* Check to see if we have passed the first guaranteed
-		 * audible frame past our last start position. if not,
-		 * return that last start point because in terms
-		 * of audible frames, we have not moved yet.
-		 *
-		 * `Start position' in this context means the time we last
-		 * either started, located, or changed transport direction.
-		 */
+	if (!transport_rolling()) {
+		return ret;
+	}
 
-		if (_transport_speed > 0.0f) {
-
-			if (!play_loop || !have_looped) {
-				if (ret < _last_roll_or_reversal_location) {
-					if (latent_locate) {
-						*latent_locate = true;
-					}
-					return _last_roll_or_reversal_location;
+#if 0 // TODO looping
+	if (_transport_speed > 0.0f) {
+		if (play_loop && have_looped) {
+			/* the play-position wrapped at the loop-point
+			 * ardour is already playing the beginning of the loop,
+			 * but due to playback latency, the "audible frame"
+			 * is still at the end of the loop.
+			 */
+			Location *location = _locations->auto_loop_location();
+			sampleoffset_t lo = location->start() - ret;
+			if (lo > 0) {
+				ret = location->end () - lo;
+				if (latent_locate) {
+					*latent_locate = true;
 				}
-			} else {
-				/* the play-position wrapped at the loop-point
-				 * ardour is already playing the beginning of the loop,
-				 * but due to playback latency, the "audible frame"
-				 * is still at the end of the loop.
-				 */
-				Location *location = _locations->auto_loop_location();
-				frameoffset_t lo = location->start() - ret;
-				if (lo > 0) {
-					ret = location->end () - lo;
-					if (latent_locate) {
-						*latent_locate = true;
-					}
-				}
-			}
-
-		} else if (_transport_speed < 0.0f) {
-
-			/* XXX wot? no backward looping? */
-
-			if (ret > _last_roll_or_reversal_location) {
-				return _last_roll_or_reversal_location;
 			}
 		}
+	} else if (_transport_speed < 0.0f) {
+		/* XXX wot? no backward looping? */
 	}
+#endif
 
-	return std::max ((framepos_t)0, ret);
+	return std::max ((samplepos_t)0, ret);
 }
 
-
-framecnt_t
-Session::preroll_samples (framepos_t pos) const
+samplecnt_t
+Session::preroll_samples (samplepos_t pos) const
 {
 	const float pr = Config->get_preroll_seconds();
 	if (pos >= 0 && pr < 0) {
-		const Tempo& tempo = _tempo_map->tempo_at_frame (pos);
-		const Meter& meter = _tempo_map->meter_at_frame (pos);
-		return meter.frames_per_bar (tempo, frame_rate()) * -pr;
+		const Tempo& tempo = _tempo_map->tempo_at_sample (pos);
+		const Meter& meter = _tempo_map->meter_at_sample (pos);
+		return meter.samples_per_bar (tempo, sample_rate()) * -pr;
 	}
 	if (pr < 0) {
 		return 0;
 	}
-	return pr * frame_rate();
+	return pr * sample_rate();
 }
 
 void
-Session::set_frame_rate (framecnt_t frames_per_second)
+Session::set_sample_rate (samplecnt_t frames_per_second)
 {
-	/** \fn void Session::set_frame_size(framecnt_t)
+	/** \fn void Session::set_sample_size(samplecnt_t)
 		the AudioEngine object that calls this guarantees
 		that it will not be called while we are also in
 		::process(). Its fine to do things that block
 		here.
 	*/
 
-	if (_base_frame_rate == 0) {
-		_base_frame_rate = frames_per_second;
+	if (_base_sample_rate == 0) {
+		_base_sample_rate = frames_per_second;
 	}
-	else if (_base_frame_rate != frames_per_second && frames_per_second != _nominal_frame_rate) {
-		NotifyAboutSampleRateMismatch (_base_frame_rate, frames_per_second);
+	else if (_base_sample_rate != frames_per_second && frames_per_second != _nominal_sample_rate) {
+		NotifyAboutSampleRateMismatch (_base_sample_rate, frames_per_second);
 	}
-	_nominal_frame_rate = frames_per_second;
+	_nominal_sample_rate = frames_per_second;
 
 	sync_time_vars();
 
@@ -2621,8 +2615,6 @@ Session::new_midi_track (const ChanCount& input, const ChanCount& output, bool s
 				track->set_strict_io (true);
 			}
 
-			track->use_new_diskstream();
-
 			BOOST_MARK_TRACK (track);
 
 			{
@@ -2638,13 +2630,9 @@ Session::new_midi_track (const ChanCount& input, const ChanCount& output, bool s
 				}
 			}
 
-			track->non_realtime_input_change();
-
 			if (route_group) {
 				route_group->add (track);
 			}
-
-			track->DiskstreamChanged.connect_same_thread (*this, boost::bind (&Session::resort_routes, this));
 
 			new_routes.push_back (track);
 			ret.push_back (track);
@@ -3219,8 +3207,6 @@ Session::new_audio_track (int input_channels, int output_channels, RouteGroup* r
 				}
 			}
 
-			track->use_new_diskstream();
-
 			BOOST_MARK_TRACK (track);
 
 			{
@@ -3246,10 +3232,6 @@ Session::new_audio_track (int input_channels, int output_channels, RouteGroup* r
 			if (route_group) {
 				route_group->add (track);
 			}
-
-			track->non_realtime_input_change();
-
-			track->DiskstreamChanged.connect_same_thread (*this, boost::bind (&Session::resort_routes, this));
 
 			new_routes.push_back (track);
 			ret.push_back (track);
@@ -3430,7 +3412,7 @@ Session::new_route_from_template (uint32_t how_many, PresentationInfo::order_t i
 			}
 
 			/* set this name in the XML description that we are about to use */
-
+#warning fixme -- no more Diskstream
 			if (pd == CopyPlaylist) {
 				XMLNode* ds_node = find_named_node (node_copy, "Diskstream");
 				if (ds_node) {
@@ -3574,8 +3556,8 @@ Session::add_routes (RouteList& new_routes, bool input_auto_connect, bool output
 
 	graph_reordered ();
 
-	update_latency (true);
 	update_latency (false);
+	update_latency (true);
 
 	set_dirty();
 
@@ -4539,21 +4521,6 @@ Session::processor_by_id (PBD::ID id) const
 	return boost::shared_ptr<Processor> ();
 }
 
-boost::shared_ptr<Track>
-Session::track_by_diskstream_id (PBD::ID id) const
-{
-	boost::shared_ptr<RouteList> r = routes.reader ();
-
-	for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
-		boost::shared_ptr<Track> t = boost::dynamic_pointer_cast<Track> (*i);
-		if (t && t->using_diskstream_id (id)) {
-			return t;
-		}
-	}
-
-	return boost::shared_ptr<Track> ();
-}
-
 boost::shared_ptr<Route>
 Session::get_remote_nth_route (PresentationInfo::order_t n) const
 {
@@ -4701,7 +4668,7 @@ Session::playlist_region_added (boost::weak_ptr<Region> w)
 
 	/* If so, update the session range markers */
 	if (!in.empty ()) {
-		maybe_update_session_range (r->position (), r->last_frame ());
+		maybe_update_session_range (r->position (), r->last_sample ());
 	}
 }
 
@@ -4709,13 +4676,13 @@ Session::playlist_region_added (boost::weak_ptr<Region> w)
  *  b is after the current end.
  */
 void
-Session::maybe_update_session_range (framepos_t a, framepos_t b)
+Session::maybe_update_session_range (samplepos_t a, samplepos_t b)
 {
 	if (_state_of_the_state & Loading) {
 		return;
 	}
 
-	framepos_t session_end_marker_shift_samples = session_end_shift * _nominal_frame_rate;
+	samplepos_t session_end_marker_shift_samples = session_end_shift * _nominal_sample_rate;
 
 	if (_session_range_location == 0) {
 
@@ -4740,17 +4707,17 @@ Session::set_end_is_free (bool yn)
 }
 
 void
-Session::playlist_ranges_moved (list<Evoral::RangeMove<framepos_t> > const & ranges)
+Session::playlist_ranges_moved (list<Evoral::RangeMove<samplepos_t> > const & ranges)
 {
-	for (list<Evoral::RangeMove<framepos_t> >::const_iterator i = ranges.begin(); i != ranges.end(); ++i) {
+	for (list<Evoral::RangeMove<samplepos_t> >::const_iterator i = ranges.begin(); i != ranges.end(); ++i) {
 		maybe_update_session_range (i->to, i->to + i->length);
 	}
 }
 
 void
-Session::playlist_regions_extended (list<Evoral::Range<framepos_t> > const & ranges)
+Session::playlist_regions_extended (list<Evoral::Range<samplepos_t> > const & ranges)
 {
-	for (list<Evoral::Range<framepos_t> >::const_iterator i = ranges.begin(); i != ranges.end(); ++i) {
+	for (list<Evoral::Range<samplepos_t> >::const_iterator i = ranges.begin(); i != ranges.end(); ++i) {
 		maybe_update_session_range (i->from, i->to);
 	}
 }
@@ -5273,15 +5240,10 @@ Session::new_audio_source_path (const string& base, uint32_t nchan, uint32_t cha
 string
 Session::new_midi_source_path (const string& base, bool need_lock)
 {
-	uint32_t cnt;
-	char buf[PATH_MAX+1];
-	const uint32_t limit = 10000;
-	string legalized;
 	string possible_path;
 	string possible_name;
 
-	buf[0] = '\0';
-	legalized = legalize_for_path (base);
+	possible_name = legalize_for_path (base);
 
 	// Find a "version" of the file name that doesn't exist in any of the possible directories.
 	std::vector<string> sdirs = source_search_path(DataType::MIDI);
@@ -5296,17 +5258,15 @@ Session::new_midi_source_path (const string& base, bool need_lock)
 	 */
 	std::reverse(sdirs.begin(), sdirs.end());
 
-	for (cnt = 1; cnt <= limit; ++cnt) {
+	while (true) {
+		possible_name = bump_name_once (possible_name, '-');
 
 		vector<space_and_path>::iterator i;
 		uint32_t existing = 0;
 
 		for (vector<string>::const_iterator i = sdirs.begin(); i != sdirs.end(); ++i) {
 
-			snprintf (buf, sizeof(buf), "%s-%u.mid", legalized.c_str(), cnt);
-			possible_name = buf;
-
-			possible_path = Glib::build_filename (*i, possible_name);
+			possible_path = Glib::build_filename (*i, possible_name + ".mid");
 
 			if (Glib::file_test (possible_path, Glib::FILE_TEST_EXISTS)) {
 				existing++;
@@ -5317,16 +5277,16 @@ Session::new_midi_source_path (const string& base, bool need_lock)
 			}
 		}
 
-		if (existing == 0) {
-			break;
-		}
-
-		if (cnt > limit) {
+		if (possible_path.size () >= PATH_MAX) {
 			error << string_compose(
-					_("There are already %1 recordings for %2, which I consider too many."),
-					limit, base) << endmsg;
+					_("There are already many recordings for %1, resulting in a too long file-path %2."),
+					base, possible_path) << endmsg;
 			destroy ();
 			return 0;
+		}
+
+		if (existing == 0) {
+			break;
 		}
 	}
 
@@ -5346,7 +5306,7 @@ Session::create_audio_source_for_session (size_t n_chans, string const & base, u
 
 	if (!path.empty()) {
 		return boost::dynamic_pointer_cast<AudioFileSource> (
-			SourceFactory::createWritable (DataType::AUDIO, *this, path, destructive, frame_rate(), true, true));
+			SourceFactory::createWritable (DataType::AUDIO, *this, path, destructive, sample_rate(), true, true));
 	} else {
 		throw failed_constructor ();
 	}
@@ -5361,7 +5321,7 @@ Session::create_midi_source_for_session (string const & basic_name)
 	if (!path.empty()) {
 		return boost::dynamic_pointer_cast<SMFSource> (
 			SourceFactory::createWritable (
-				DataType::MIDI, *this, path, false, frame_rate()));
+				DataType::MIDI, *this, path, false, sample_rate()));
 	} else {
 		throw failed_constructor ();
 	}
@@ -5406,7 +5366,7 @@ Session::create_midi_source_by_stealing_name (boost::shared_ptr<Track> track)
 
 	return boost::dynamic_pointer_cast<SMFSource> (
 		SourceFactory::createWritable (
-			DataType::MIDI, *this, path, false, frame_rate()));
+			DataType::MIDI, *this, path, false, sample_rate()));
 }
 
 
@@ -5509,7 +5469,7 @@ Session::registered_lua_functions ()
 			if (!i.key ().isString ()) { assert(0); continue; }
 			rv.push_back (i.key ().cast<std::string> ());
 		}
-	} catch (luabridge::LuaException const& e) { }
+	} catch (...) { }
 	return rv;
 }
 
@@ -5525,7 +5485,7 @@ Session::try_run_lua (pframes_t nframes)
 	if (_n_lua_scripts == 0) return;
 	Glib::Threads::Mutex::Lock tm (lua_lock, Glib::Threads::TRY_LOCK);
 	if (tm.locked ()) {
-		try { (*_lua_run)(nframes); } catch (luabridge::LuaException const& e) { }
+		try { (*_lua_run)(nframes); } catch (...) { }
 		lua.collect_garbage_step ();
 	}
 }
@@ -5536,7 +5496,6 @@ Session::setup_lua ()
 #ifndef NDEBUG
 	lua.Print.connect (&_lua_print);
 #endif
-	lua.tweak_rt_gc ();
 	lua.sandbox (true);
 	lua.do_command (
 			"function ArdourSession ()"
@@ -5657,14 +5616,21 @@ Session::setup_lua ()
 		_lua_cleanup = new luabridge::LuaRef(lua_sess["cleanup"]);
 	} catch (luabridge::LuaException const& e) {
 		fatal << string_compose (_("programming error: %1"),
-				X_("Failed to setup Lua interpreter"))
+				std::string ("Failed to setup session Lua interpreter") + e.what ())
+			<< endmsg;
+		abort(); /*NOTREACHED*/
+	} catch (...) {
+		fatal << string_compose (_("programming error: %1"),
+				X_("Failed to setup session Lua interpreter"))
 			<< endmsg;
 		abort(); /*NOTREACHED*/
 	}
 
+	lua_mlock (L, 1);
 	LuaBindings::stddef (L);
 	LuaBindings::common (L);
 	LuaBindings::dsp (L);
+	lua_mlock (L, 0);
 	luabridge::push <Session *> (L, this);
 	lua_setglobal (L, "Session");
 }
@@ -5683,6 +5649,11 @@ Session::scripts_changed ()
 		}
 		_n_lua_scripts = cnt;
 	} catch (luabridge::LuaException const& e) {
+		fatal << string_compose (_("programming error: %1"),
+				std::string ("Indexing Lua Session Scripts failed.") + e.what ())
+			<< endmsg;
+		abort(); /*NOTREACHED*/
+	} catch (...) {
 		fatal << string_compose (_("programming error: %1"),
 				X_("Indexing Lua Session Scripts failed."))
 			<< endmsg;
@@ -5741,37 +5712,24 @@ Session::graph_reordered ()
 		return;
 	}
 
-	/* every track/bus asked for this to be handled but it was deferred because
-	   we were connecting. do it now.
-	*/
-
-	request_input_change_handling ();
-
 	resort_routes ();
 
 	/* force all diskstreams to update their capture offset values to
-	   reflect any changes in latencies within the graph.
-	*/
-
-	boost::shared_ptr<RouteList> rl = routes.reader ();
-	for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
-		boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
-		if (tr) {
-			tr->set_capture_offset ();
-		}
-	}
+	 * reflect any changes in latencies within the graph.
+	 */
+	update_route_latency (false, true);
 }
 
-/** @return Number of frames that there is disk space available to write,
+/** @return Number of samples that there is disk space available to write,
  *  if known.
  */
-boost::optional<framecnt_t>
+boost::optional<samplecnt_t>
 Session::available_capture_duration ()
 {
 	Glib::Threads::Mutex::Lock lm (space_lock);
 
 	if (_total_free_4k_blocks_uncertain) {
-		return boost::optional<framecnt_t> ();
+		return boost::optional<samplecnt_t> ();
 	}
 
 	float sample_bytes_on_disk = 4.0; // keep gcc happy
@@ -5799,11 +5757,11 @@ Session::available_capture_duration ()
 
 	double scale = 4096.0 / sample_bytes_on_disk;
 
-	if (_total_free_4k_blocks * scale > (double) max_framecnt) {
-		return max_framecnt;
+	if (_total_free_4k_blocks * scale > (double) max_samplecnt) {
+		return max_samplecnt;
 	}
 
-	return (framecnt_t) floor (_total_free_4k_blocks * scale);
+	return (samplecnt_t) floor (_total_free_4k_blocks * scale);
 }
 
 void
@@ -5875,7 +5833,7 @@ void
 Session::update_locations_after_tempo_map_change (const Locations::LocationList& loc)
 {
 	for (Locations::LocationList::const_iterator i = loc.begin(); i != loc.end(); ++i) {
-		(*i)->recompute_frames_from_beat ();
+		(*i)->recompute_samples_from_beat ();
 	}
 }
 
@@ -6123,7 +6081,7 @@ Session::freeze_all (InterThreadInfo& itt)
 }
 
 boost::shared_ptr<Region>
-Session::write_one_track (Track& track, framepos_t start, framepos_t end,
+Session::write_one_track (Track& track, samplepos_t start, samplepos_t end,
 			  bool /*overwrite*/, vector<boost::shared_ptr<Source> >& srcs,
 			  InterThreadInfo& itt,
 			  boost::shared_ptr<Processor> endpoint, bool include_endpoint,
@@ -6133,12 +6091,12 @@ Session::write_one_track (Track& track, framepos_t start, framepos_t end,
 	boost::shared_ptr<Playlist> playlist;
 	boost::shared_ptr<Source> source;
 	ChanCount diskstream_channels (track.n_channels());
-	framepos_t position;
-	framecnt_t this_chunk;
-	framepos_t to_do;
-	framepos_t latency_skip;
+	samplepos_t position;
+	samplecnt_t this_chunk;
+	samplepos_t to_do;
+	samplepos_t latency_skip;
 	BufferSet buffers;
-	framepos_t len = end - start;
+	samplepos_t len = end - start;
 	bool need_block_size_reset = false;
 	ChanCount const max_proc = track.max_processor_streams ();
 	string legal_playlist_name;
@@ -6192,7 +6150,7 @@ Session::write_one_track (Track& track, framepos_t start, framepos_t end,
 		}
 
 		try {
-			source = SourceFactory::createWritable (track.data_type(), *this, path, false, frame_rate());
+			source = SourceFactory::createWritable (track.data_type(), *this, path, false, sample_rate());
 		}
 
 		catch (failed_constructor& err) {
@@ -6250,7 +6208,7 @@ Session::write_one_track (Track& track, framepos_t start, framepos_t end,
 			continue;
 		}
 
-		const framecnt_t current_chunk = this_chunk - latency_skip;
+		const samplecnt_t current_chunk = this_chunk - latency_skip;
 
 		uint32_t n = 0;
 		for (vector<boost::shared_ptr<Source> >::iterator src=srcs.begin(); src != srcs.end(); ++src, ++n) {
@@ -6266,9 +6224,9 @@ Session::write_one_track (Track& track, framepos_t start, framepos_t end,
 
 				const MidiBuffer& buf = buffers.get_midi(0);
 				for (MidiBuffer::const_iterator i = buf.begin(); i != buf.end(); ++i) {
-					Evoral::Event<framepos_t> ev = *i;
+					Evoral::Event<samplepos_t> ev = *i;
 					ev.set_time(ev.time() - position);
-					ms->append_event_frames(lock, ev, ms->timeline_position());
+					ms->append_event_samples(lock, ev, ms->timeline_position());
 				}
 			}
 		}
@@ -6596,7 +6554,7 @@ Session::get_tracks () const
 }
 
 boost::shared_ptr<RouteList>
-Session::get_routes_with_regions_at (framepos_t const p) const
+Session::get_routes_with_regions_at (samplepos_t const p) const
 {
 	boost::shared_ptr<RouteList> r = routes.reader ();
 	boost::shared_ptr<RouteList> rl (new RouteList);
@@ -6640,20 +6598,20 @@ Session::goto_start (bool and_roll)
 	}
 }
 
-framepos_t
-Session::current_start_frame () const
+samplepos_t
+Session::current_start_sample () const
 {
 	return _session_range_location ? _session_range_location->start() : 0;
 }
 
-framepos_t
-Session::current_end_frame () const
+samplepos_t
+Session::current_end_sample () const
 {
 	return _session_range_location ? _session_range_location->end() : 0;
 }
 
 void
-Session::set_session_range_location (framepos_t start, framepos_t end)
+Session::set_session_range_location (samplepos_t start, samplepos_t end)
 {
 	_session_range_location = new Location (*this, start, end, _("session"), Location::IsSessionRange, 0);
 	_locations->add (_session_range_location);
@@ -6686,7 +6644,7 @@ Session::step_edit_status_change (bool yn)
 
 
 void
-Session::start_time_changed (framepos_t old)
+Session::start_time_changed (samplepos_t old)
 {
 	/* Update the auto loop range to match the session range
 	   (unless the auto loop range has been changed by the user)
@@ -6706,7 +6664,7 @@ Session::start_time_changed (framepos_t old)
 }
 
 void
-Session::end_time_changed (framepos_t old)
+Session::end_time_changed (samplepos_t old)
 {
 	/* Update the auto loop range to match the session range
 	   (unless the auto loop range has been changed by the user)
@@ -6869,9 +6827,76 @@ Session::unknown_processors () const
 }
 
 void
+Session::set_worst_io_latencies_x (IOChange, void *)
+{
+		set_worst_io_latencies ();
+}
+
+void
+Session::send_latency_compensation_change ()
+{
+	/* As a result of Send::set_output_latency()
+	 * or InternalReturn::set_playback_offset ()
+	 * the send's own latency can change (source track
+	 * is aligned with target bus).
+	 *
+	 * This can only happen be triggered by
+	 * Route::update_signal_latency ()
+	 * when updating the processor latency.
+	 *
+	 * We need to walk the graph again to take those changes into account
+	 * (we should probably recurse or process the graph in a 2 step process).
+	 */
+	++_send_latency_changes;
+}
+
+bool
+Session::update_route_latency (bool playback, bool apply_to_delayline)
+{
+	/* Note: RouteList is process-graph sorted */
+	boost::shared_ptr<RouteList> r = routes.reader ();
+
+	if (playback) {
+		/* reverse the list so that we work backwards from the last route to run to the first,
+		 * this is not needed, but can help to reduce the iterations for aux-sends.
+		 */
+		RouteList* rl = routes.reader().get();
+		r.reset (new RouteList (*rl));
+		reverse (r->begin(), r->end());
+	}
+
+	bool changed = false;
+	int bailout = 0;
+restart:
+	_send_latency_changes = 0;
+	_worst_route_latency = 0;
+
+	for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
+		// if (!(*i)->active()) { continue ; } // TODO
+		samplecnt_t l;
+		if ((*i)->signal_latency () != (l = (*i)->update_signal_latency (apply_to_delayline))) {
+			changed = true;
+		}
+		_worst_route_latency = std::max (l, _worst_route_latency);
+	}
+
+	if (_send_latency_changes > 0) {
+		// only 1 extra iteration is needed (we allow only 1 level of aux-sends)
+		// BUT..  jack'n'sends'n'bugs
+		if (++bailout < 5) {
+			cerr << "restarting Session::update_latency. # of send changes: " << _send_latency_changes << " iteration: " << bailout << endl;
+			goto restart;
+		}
+	}
+
+	DEBUG_TRACE (DEBUG::Latency, string_compose ("worst signal processing latency: %1 (changed ? %2)\n", _worst_route_latency, (changed ? "yes" : "no")));
+
+	return changed;
+}
+
+void
 Session::update_latency (bool playback)
 {
-
 	DEBUG_TRACE (DEBUG::Latency, string_compose ("JACK latency callback: %1\n", (playback ? "PLAYBACK" : "CAPTURE")));
 
 	if ((_state_of_the_state & (InitialConnecting|Deletion)) || _adding_routes_in_progress || _route_deletion_in_progress) {
@@ -6881,107 +6906,53 @@ Session::update_latency (bool playback)
 		return;
 	}
 
+	/* Note; RouteList is sorted as process-graph */
 	boost::shared_ptr<RouteList> r = routes.reader ();
-	framecnt_t max_latency = 0;
 
 	if (playback) {
 		/* reverse the list so that we work backwards from the last route to run to the first */
-                RouteList* rl = routes.reader().get();
-                r.reset (new RouteList (*rl));
+		RouteList* rl = routes.reader().get();
+		r.reset (new RouteList (*rl));
 		reverse (r->begin(), r->end());
 	}
 
-	/* compute actual latency values for the given direction and store them all in per-port
-	   structures. this will also publish the same values (to JACK) so that computation of latency
-	   for routes can consistently use public latency values.
-	*/
-
 	for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
-		max_latency = max (max_latency, (*i)->set_private_port_latencies (playback));
+		samplecnt_t latency = (*i)->set_private_port_latencies (playback);
+		(*i)->set_public_port_latencies (latency, playback);
 	}
 
-        /* because we latency compensate playback, our published playback latencies should
-           be the same for all output ports - all material played back by ardour has
-           the same latency, whether its caused by plugins or by latency compensation. since
-           these may differ from the values computed above, reset all playback port latencies
-           to the same value.
-        */
-
-        DEBUG_TRACE (DEBUG::Latency, string_compose ("Set public port latencies to %1\n", max_latency));
-
-        for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
-                (*i)->set_public_port_latencies (max_latency, playback);
-        }
-
 	if (playback) {
-
-		post_playback_latency ();
-
+		set_worst_output_latency ();
+		update_route_latency (true, true);
 	} else {
-
-		post_capture_latency ();
+		set_worst_input_latency ();
+		update_route_latency (false, false);
 	}
 
 	DEBUG_TRACE (DEBUG::Latency, "JACK latency callback: DONE\n");
 }
 
 void
-Session::post_playback_latency ()
-{
-	set_worst_playback_latency ();
-
-	boost::shared_ptr<RouteList> r = routes.reader ();
-
-	for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
-		assert (!(*i)->is_auditioner()); // XXX remove me
-		if ((*i)->active()) {
-			_worst_track_latency = max (_worst_track_latency, (*i)->update_signal_latency ());
-		}
-	}
-
-	for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
-		(*i)->set_latency_compensation (_worst_track_latency);
-	}
-}
-
-void
-Session::post_capture_latency ()
-{
-	set_worst_capture_latency ();
-
-	/* reflect any changes in capture latencies into capture offsets
-	 */
-
-	boost::shared_ptr<RouteList> rl = routes.reader();
-	for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
-		boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
-		if (tr) {
-			tr->set_capture_offset ();
-		}
-	}
-}
-
-void
 Session::initialize_latencies ()
 {
-        {
-                Glib::Threads::Mutex::Lock lm (_engine.process_lock());
-                update_latency (false);
-                update_latency (true);
-        }
+	{
+		Glib::Threads::Mutex::Lock lm (_engine.process_lock());
+		update_latency (false);
+		update_latency (true);
+	}
 
-        set_worst_io_latencies ();
+	set_worst_io_latencies ();
 }
 
 void
 Session::set_worst_io_latencies ()
 {
-	set_worst_playback_latency ();
-	set_worst_capture_latency ();
+	set_worst_output_latency ();
+	set_worst_input_latency ();
 }
 
 void
-Session::set_worst_playback_latency ()
+Session::set_worst_output_latency ()
 {
 	if (_state_of_the_state & (InitialConnecting|Deletion)) {
 		return;
@@ -6999,11 +6970,13 @@ Session::set_worst_playback_latency ()
 		_worst_output_latency = max (_worst_output_latency, (*i)->output()->latency());
 	}
 
+	_worst_output_latency = max (_worst_output_latency, _click_io->latency());
+
 	DEBUG_TRACE (DEBUG::Latency, string_compose ("Worst output latency: %1\n", _worst_output_latency));
 }
 
 void
-Session::set_worst_capture_latency ()
+Session::set_worst_input_latency ()
 {
 	if (_state_of_the_state & (InitialConnecting|Deletion)) {
 		return;
@@ -7021,51 +6994,29 @@ Session::set_worst_capture_latency ()
 		_worst_input_latency = max (_worst_input_latency, (*i)->input()->latency());
 	}
 
-        DEBUG_TRACE (DEBUG::Latency, string_compose ("Worst input latency: %1\n", _worst_input_latency));
+	DEBUG_TRACE (DEBUG::Latency, string_compose ("Worst input latency: %1\n", _worst_input_latency));
 }
 
 void
 Session::update_latency_compensation (bool force_whole_graph)
 {
-	bool some_track_latency_changed = false;
-
 	if (_state_of_the_state & (InitialConnecting|Deletion)) {
 		return;
 	}
 
-	DEBUG_TRACE(DEBUG::Latency, "---------------------------- update latency compensation\n\n");
-
-	_worst_track_latency = 0;
-
-	boost::shared_ptr<RouteList> r = routes.reader ();
-
-	for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
-		assert (!(*i)->is_auditioner()); // XXX remove me
-		if ((*i)->active()) {
-			framecnt_t tl;
-			if ((*i)->signal_latency () != (tl = (*i)->update_signal_latency ())) {
-				some_track_latency_changed = true;
-			}
-			_worst_track_latency = max (tl, _worst_track_latency);
-		}
-	}
-
-	DEBUG_TRACE (DEBUG::Latency, string_compose ("worst signal processing latency: %1 (changed ? %2)\n", _worst_track_latency,
-	                                             (some_track_latency_changed ? "yes" : "no")));
-
-	DEBUG_TRACE(DEBUG::Latency, "---------------------------- DONE update latency compensation\n\n");
+	bool some_track_latency_changed = update_route_latency (false, false);
 
 	if (some_track_latency_changed || force_whole_graph)  {
 		_engine.update_latencies ();
-	}
-
-
-	for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
-		boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
-		if (!tr) {
-			continue;
+		/* above call will ask the backend up update its latencies, which
+		 * eventually will trigger  AudioEngine::latency_callback () and
+		 * call Session::update_latency ()
+		 */
+	} else {
+		boost::shared_ptr<RouteList> r = routes.reader ();
+		for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
+			(*i)->apply_latency_compensation ();
 		}
-		tr->set_capture_offset ();
 	}
 }
 
@@ -7156,18 +7107,18 @@ Session::reconnect_ltc_output ()
 }
 
 void
-Session::set_range_selection (framepos_t start, framepos_t end)
+Session::set_range_selection (samplepos_t start, samplepos_t end)
 {
-	_range_selection = Evoral::Range<framepos_t> (start, end);
+	_range_selection = Evoral::Range<samplepos_t> (start, end);
 #ifdef USE_TRACKS_CODE_FEATURES
 	follow_playhead_priority ();
 #endif
 }
 
 void
-Session::set_object_selection (framepos_t start, framepos_t end)
+Session::set_object_selection (samplepos_t start, samplepos_t end)
 {
-	_object_selection = Evoral::Range<framepos_t> (start, end);
+	_object_selection = Evoral::Range<samplepos_t> (start, end);
 #ifdef USE_TRACKS_CODE_FEATURES
 	follow_playhead_priority ();
 #endif
@@ -7176,7 +7127,7 @@ Session::set_object_selection (framepos_t start, framepos_t end)
 void
 Session::clear_range_selection ()
 {
-	_range_selection = Evoral::Range<framepos_t> (-1,-1);
+	_range_selection = Evoral::Range<samplepos_t> (-1,-1);
 #ifdef USE_TRACKS_CODE_FEATURES
 	follow_playhead_priority ();
 #endif
@@ -7185,7 +7136,7 @@ Session::clear_range_selection ()
 void
 Session::clear_object_selection ()
 {
-	_object_selection = Evoral::Range<framepos_t> (-1,-1);
+	_object_selection = Evoral::Range<samplepos_t> (-1,-1);
 #ifdef USE_TRACKS_CODE_FEATURES
 	follow_playhead_priority ();
 #endif
@@ -7398,12 +7349,12 @@ Session::auto_connect_thread_run ()
 			/* this is only used for updating plugin latencies, the
 			 * graph does not change. so it's safe in general.
 			 * BUT..
-			 * .. update_latency_compensation () entails set_capture_offset()
-			 * which calls Diskstream::set_capture_offset () which
-			 * modifies the capture offset... which can be a proplem
-			 * in "prepare_to_stop"
+			 * update_latency_compensation ()
+			 * calls DiskWriter::set_capture_offset () which
+			 * modifies the capture-offset, which can be a problem.
 			 */
 			while (g_atomic_int_and (&_latency_recompute_pending, 0)) {
+				Glib::Threads::Mutex::Lock lm (AudioEngine::instance()->process_lock ());
 				update_latency_compensation ();
 			}
 		}

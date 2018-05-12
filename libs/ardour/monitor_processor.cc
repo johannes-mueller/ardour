@@ -218,9 +218,9 @@ MonitorProcessor::set_state (const XMLNode& node, int version)
 }
 
 XMLNode&
-MonitorProcessor::state (bool full)
+MonitorProcessor::state ()
 {
-	XMLNode& node(Processor::state(full));
+	XMLNode& node(Processor::state ());
 
 	/* this replaces any existing "type" property */
 
@@ -257,7 +257,7 @@ MonitorProcessor::state (bool full)
 }
 
 void
-MonitorProcessor::run (BufferSet& bufs, framepos_t /*start_frame*/, framepos_t /*end_frame*/, double /*speed*/, pframes_t nframes, bool /*result_required*/)
+MonitorProcessor::run (BufferSet& bufs, samplepos_t /*start_sample*/, samplepos_t /*end_sample*/, double /*speed*/, pframes_t nframes, bool /*result_required*/)
 {
         uint32_t chn = 0;
         gain_t target_gain;
@@ -290,7 +290,7 @@ MonitorProcessor::run (BufferSet& bufs, framepos_t /*start_frame*/, framepos_t /
 
                 if (target_gain != _channels[chn]->current_gain || target_gain != GAIN_COEFF_UNITY) {
 
-                        _channels[chn]->current_gain = Amp::apply_gain (*b, _session.nominal_frame_rate(), nframes, _channels[chn]->current_gain, target_gain);
+                        _channels[chn]->current_gain = Amp::apply_gain (*b, _session.nominal_sample_rate(), nframes, _channels[chn]->current_gain, target_gain);
                 }
 
                 ++chn;

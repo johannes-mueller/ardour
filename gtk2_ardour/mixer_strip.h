@@ -236,7 +236,8 @@ private:
 
 	Gtk::Menu output_menu;
 	std::list<boost::shared_ptr<ARDOUR::Bundle> > output_menu_bundles;
-	void maybe_add_bundle_to_output_menu (boost::shared_ptr<ARDOUR::Bundle>, ARDOUR::BundleList const &);
+	void maybe_add_bundle_to_output_menu (boost::shared_ptr<ARDOUR::Bundle>, ARDOUR::BundleList const &,
+	                                      ARDOUR::DataType type = ARDOUR::DataType::NIL);
 
 	void bundle_input_chosen (boost::shared_ptr<ARDOUR::Bundle>);
 	void bundle_output_chosen (boost::shared_ptr<ARDOUR::Bundle>);
@@ -297,7 +298,9 @@ private:
 
 	void reset_strip_style ();
 
-	void update_io_button (boost::shared_ptr<ARDOUR::Route> route, Width width, bool input_button);
+	ARDOUR::DataType guess_main_type(bool for_input, bool favor_connected = true) const;
+
+	void update_io_button (bool input_button);
 	void port_connected_or_disconnected (boost::weak_ptr<ARDOUR::Port>, boost::weak_ptr<ARDOUR::Port>);
 
 	bool mixer_strip_enter_event ( GdkEventCrossing * );

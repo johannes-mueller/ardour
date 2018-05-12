@@ -31,7 +31,7 @@
 #include "pbd/unwind.h"
 
 #include "ardour/automation_control.h"
-#include "ardour/beats_frames_converter.h"
+#include "ardour/beats_samples_converter.h"
 #include "ardour/event_type_map.h"
 #include "ardour/parameter_types.h"
 #include "ardour/profile.h"
@@ -138,6 +138,7 @@ AutomationTimeAxisView::AutomationTimeAxisView (
 
 	auto_off_item = 0;
 	auto_touch_item = 0;
+	auto_latch_item = 0;
 	auto_write_item = 0;
 	auto_play_item = 0;
 	mode_discrete_item = 0;
@@ -170,6 +171,7 @@ AutomationTimeAxisView::AutomationTimeAxisView (
 	      _parameter.type() <= MidiChannelPressureAutomation)) {
 		auto_dropdown.AddMenuElem (MenuElem (_("Write"), sigc::bind (sigc::mem_fun(*this, &AutomationTimeAxisView::set_automation_state), (AutoState) Write)));
 		auto_dropdown.AddMenuElem (MenuElem (_("Touch"), sigc::bind (sigc::mem_fun(*this, &AutomationTimeAxisView::set_automation_state), (AutoState) Touch)));
+		auto_dropdown.AddMenuElem (MenuElem (_("Latch"), sigc::bind (sigc::mem_fun(*this, &AutomationTimeAxisView::set_automation_state), (AutoState) Latch)));
 	}
 
 	/* XXX translators: use a string here that will be at least as long
@@ -369,7 +371,7 @@ AutomationTimeAxisView::automation_state_changed ()
 		state = ARDOUR::Off;
 	}
 
-	switch (state & (ARDOUR::Off|Play|Touch|Write)) {
+	switch (state & (ARDOUR::Off|Play|Touch|Write|Latch)) {
 	case ARDOUR::Off:
 		auto_dropdown.set_text (automation_state_off_string());
 		ignore_state_request = true;
@@ -379,6 +381,7 @@ AutomationTimeAxisView::automation_state_changed ()
 		}
 		if (auto_touch_item) {
 			auto_touch_item->set_active (false);
+			auto_latch_item->set_active (false);
 			auto_write_item->set_active (false);
 		}
 		ignore_state_request = false;
@@ -392,6 +395,7 @@ AutomationTimeAxisView::automation_state_changed ()
 		}
 		if (auto_touch_item) {
 			auto_touch_item->set_active (false);
+			auto_latch_item->set_active (false);
 			auto_write_item->set_active (false);
 		}
 		ignore_state_request = false;
@@ -406,6 +410,7 @@ AutomationTimeAxisView::automation_state_changed ()
 		if (auto_touch_item) {
 			auto_write_item->set_active (true);
 			auto_touch_item->set_active (false);
+			auto_latch_item->set_active (false);
 		}
 		ignore_state_request = false;
 		break;
@@ -418,6 +423,21 @@ AutomationTimeAxisView::automation_state_changed ()
 		}
 		if (auto_touch_item) {
 			auto_touch_item->set_active (true);
+			auto_write_item->set_active (false);
+			auto_latch_item->set_active (false);
+		}
+		ignore_state_request = false;
+		break;
+	case Latch:
+		auto_dropdown.set_text (_("Latch"));
+		ignore_state_request = true;
+		if (auto_off_item) {
+			auto_off_item->set_active (false);
+			auto_play_item->set_active (false);
+		}
+		if (auto_touch_item) {
+			auto_latch_item->set_active (true);
+			auto_touch_item->set_active (false);
 			auto_write_item->set_active (false);
 		}
 		ignore_state_request = false;
@@ -622,6 +642,11 @@ AutomationTimeAxisView::build_display_menu ()
 			                                   sigc::mem_fun(*this, &AutomationTimeAxisView::set_automation_state),
 			(AutoState) Touch)));
 		auto_touch_item = dynamic_cast<Gtk::CheckMenuItem*>(&as_items.back());
+
+		as_items.push_back (CheckMenuElem (_("Latch"), sigc::bind (
+						sigc::mem_fun(*this, &AutomationTimeAxisView::set_automation_state),
+						(AutoState) Latch)));
+		auto_latch_item = dynamic_cast<Gtk::CheckMenuItem*>(&as_items.back());
 	}
 
 	items.push_back (MenuElem (_("State"), *auto_state_menu));
@@ -652,7 +677,7 @@ AutomationTimeAxisView::build_display_menu ()
 		items.push_back (MenuElem (_("Mode"), *auto_mode_menu));
 
 	} else {
-#ifdef XXX_NEW_INTERPOLATON__BREAK_SESSION_FORMAT_XXX
+
 		Menu* auto_mode_menu = manage (new Menu);
 		auto_mode_menu->set_name ("ArdourContextMenu");
 		MenuList& am_items = auto_mode_menu->items();
@@ -692,7 +717,6 @@ AutomationTimeAxisView::build_display_menu ()
 			delete auto_mode_menu;
 			auto_mode_menu = 0;
 		}
-#endif
 	}
 
 	/* make sure the automation menu state is correct */
@@ -702,7 +726,7 @@ AutomationTimeAxisView::build_display_menu ()
 }
 
 void
-AutomationTimeAxisView::add_automation_event (GdkEvent* event, framepos_t frame, double y, bool with_guard_points)
+AutomationTimeAxisView::add_automation_event (GdkEvent* event, samplepos_t sample, double y, bool with_guard_points)
 {
 	if (!_line) {
 		return;
@@ -717,14 +741,14 @@ AutomationTimeAxisView::add_automation_event (GdkEvent* event, framepos_t frame,
 		return;
 	}
 
-	MusicFrame when (frame, 0);
+	MusicSample when (sample, 0);
 	_editor.snap_to_with_modifier (when, event);
 
 	if (UIConfiguration::instance().get_new_automation_points_on_lane()) {
 		if (_control->list()->size () == 0) {
 			y = _control->get_value ();
 		} else {
-			y = _control->list()->eval (when.frame);
+			y = _control->list()->eval (when.sample);
 		}
 	} else {
 		double x = 0;
@@ -738,12 +762,12 @@ AutomationTimeAxisView::add_automation_event (GdkEvent* event, framepos_t frame,
 	XMLNode& before = list->get_state();
 	std::list<Selectable*> results;
 
-	if (list->editor_add (when.frame, y, with_guard_points)) {
+	if (list->editor_add (when.sample, y, with_guard_points)) {
 		XMLNode& after = list->get_state();
 		_editor.begin_reversible_command (_("add automation event"));
 		_session->add_command (new MementoCommand<ARDOUR::AutomationList> (*list.get (), &before, &after));
 
-		_line->get_selectables (when.frame, when.frame, 0.0, 1.0, results);
+		_line->get_selectables (when.sample, when.sample, 0.0, 1.0, results);
 		_editor.get_selection ().set (results);
 
 		_editor.commit_reversible_command ();
@@ -752,7 +776,7 @@ AutomationTimeAxisView::add_automation_event (GdkEvent* event, framepos_t frame,
 }
 
 bool
-AutomationTimeAxisView::paste (framepos_t pos, const Selection& selection, PasteContext& ctx, const int32_t divisions)
+AutomationTimeAxisView::paste (samplepos_t pos, const Selection& selection, PasteContext& ctx, const int32_t divisions)
 {
 	if (_line) {
 		return paste_one (pos, ctx.count, ctx.times, selection, ctx.counts, ctx.greedy);
@@ -773,7 +797,7 @@ AutomationTimeAxisView::paste (framepos_t pos, const Selection& selection, Paste
 }
 
 bool
-AutomationTimeAxisView::paste_one (framepos_t pos, unsigned paste_count, float times, const Selection& selection, ItemCounts& counts, bool greedy)
+AutomationTimeAxisView::paste_one (samplepos_t pos, unsigned paste_count, float times, const Selection& selection, ItemCounts& counts, bool greedy)
 {
 	boost::shared_ptr<AutomationList> alist(_line->the_list());
 
@@ -800,7 +824,7 @@ AutomationTimeAxisView::paste_one (framepos_t pos, unsigned paste_count, float t
 
 	if (parameter_is_midi (src_type)) {
 		// convert length to samples (incl tempo-ramps)
-		len = DoubleBeatsFramesConverter (_session->tempo_map(), pos).to (len * paste_count);
+		len = DoubleBeatsSamplesConverter (_session->tempo_map(), pos).to (len * paste_count);
 		pos += _editor.get_paste_offset (pos, paste_count > 0 ? 1 : 0, len);
 	} else {
 		pos += _editor.get_paste_offset (pos, paste_count, len);
@@ -810,14 +834,14 @@ AutomationTimeAxisView::paste_one (framepos_t pos, unsigned paste_count, float t
 	double const model_pos = _line->time_converter().from (pos - _line->time_converter().origin_b ());
 
 	XMLNode &before = alist->get_state();
-	alist->paste (**p, model_pos, DoubleBeatsFramesConverter (_session->tempo_map(), pos));
+	alist->paste (**p, model_pos, DoubleBeatsSamplesConverter (_session->tempo_map(), pos));
 	_session->add_command (new MementoCommand<AutomationList>(*alist.get(), &before, &alist->get_state()));
 
 	return true;
 }
 
 void
-AutomationTimeAxisView::get_selectables (framepos_t start, framepos_t end, double top, double bot, list<Selectable*>& results, bool /*within*/)
+AutomationTimeAxisView::get_selectables (samplepos_t start, samplepos_t end, double top, double bot, list<Selectable*>& results, bool /*within*/)
 {
 	if (!_line && !_view) {
 		return;
@@ -1114,7 +1138,7 @@ AutomationTimeAxisView::cut_copy_clear_one (AutomationLine& line, Selection& sel
 	XMLNode &before = alist->get_state();
 
 	/* convert time selection to automation list model coordinates */
-	const Evoral::TimeConverter<double, ARDOUR::framepos_t>& tc = line.time_converter ();
+	const Evoral::TimeConverter<double, ARDOUR::samplepos_t>& tc = line.time_converter ();
 	double const start = tc.from (selection.time.front().start - tc.origin_b ());
 	double const end = tc.from (selection.time.front().end - tc.origin_b ());
 

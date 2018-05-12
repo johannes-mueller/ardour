@@ -196,7 +196,7 @@ find_session (string str, string& path, string& snapshot, bool& isnew)
 int
 inflate_session (const std::string& zipfile, const std::string& target_dir, string& path, string& snapshot)
 {
-	if (zipfile.find (".tar.xz") == string::npos) {
+	if (zipfile.find (session_archive_suffix) == string::npos) {
 		return 1;
 	}
 
@@ -262,7 +262,7 @@ string inflate_error (int e) {
 		case 0:
 			return _("No Error");
 		case 1:
-			return _("File extension is not .tar.xz");
+			return string_compose (_("File extension is not %1"), session_archive_suffix);
 		case 2:
 			return _("Archive is empty");
 		case 3:

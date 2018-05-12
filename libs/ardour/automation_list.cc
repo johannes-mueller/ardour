@@ -24,7 +24,7 @@
 #include <sstream>
 #include <algorithm>
 #include "ardour/automation_list.h"
-#include "ardour/beats_frames_converter.h"
+#include "ardour/beats_samples_converter.h"
 #include "ardour/event_type_map.h"
 #include "ardour/parameter_descriptor.h"
 #include "ardour/parameter_types.h"
@@ -224,10 +224,6 @@ AutomationList::default_interpolation () const
 		case GainAutomation:
 		case BusSendLevel:
 		case EnvelopeAutomation:
-#ifndef XXX_NEW_INTERPOLATON__BREAK_SESSION_FORMAT_XXX
-			/* use old, wrong linear gain interpolation */
-			return ControlList::Linear;
-#endif
 			return ControlList::Exponential;
 			break;
 		case TrimAutomation:
@@ -311,7 +307,7 @@ AutomationList::thaw ()
 }
 
 bool
-AutomationList::paste (const ControlList& alist, double pos, DoubleBeatsFramesConverter const& bfc)
+AutomationList::paste (const ControlList& alist, double pos, DoubleBeatsSamplesConverter const& bfc)
 {
 	AutomationType src_type = (AutomationType)alist.parameter().type();
 	AutomationType dst_type = (AutomationType)_parameter.type();
@@ -319,13 +315,13 @@ AutomationList::paste (const ControlList& alist, double pos, DoubleBeatsFramesCo
 	if (parameter_is_midi (src_type) == parameter_is_midi (dst_type)) {
 		return ControlList::paste (alist, pos);
 	}
-	bool to_frame = parameter_is_midi (src_type);
+	bool to_sample = parameter_is_midi (src_type);
 
 	ControlList cl (alist);
 	cl.clear ();
 	for (const_iterator i = alist.begin ();i != alist.end (); ++i) {
 		double when = (*i)->when;
-		if (to_frame) {
+		if (to_sample) {
 			when = bfc.to ((*i)->when);
 		} else {
 			when = bfc.from ((*i)->when);
@@ -348,30 +344,15 @@ AutomationList::get_state ()
 }
 
 XMLNode&
-AutomationList::state (bool full, bool need_lock)
+AutomationList::state (bool save_auto_state, bool need_lock)
 {
 	XMLNode* root = new XMLNode (X_("AutomationList"));
 
 	root->set_property ("automation-id", EventTypeMap::instance().to_symbol(_parameter));
 	root->set_property ("id", id());
-
-#ifndef XXX_NEW_INTERPOLATON__BREAK_SESSION_FORMAT_XXX
-	/* force new enums to existing ones in session-file */
-	Evoral::ControlList::InterpolationStyle is = _interpolation;
-	switch (is) {
-		case ControlList::Exponential:
-		case ControlList::Logarithmic:
-			is = ControlList::Linear;
-			break;
-		default:
-			break;
-	}
-	root->set_property ("interpolation-style", is);
-#else
 	root->set_property ("interpolation-style", _interpolation);
-#endif
 
-	if (full) {
+	if (save_auto_state) {
 		/* never serialize state with Write enabled - too dangerous
 		   for the user's data
 		*/
@@ -544,12 +525,6 @@ AutomationList::set_state (const XMLNode& node, int version)
 	if (!node.get_property (X_("interpolation-style"), _interpolation)) {
 		_interpolation = default_interpolation ();
 	}
-#ifndef XXX_NEW_INTERPOLATON__BREAK_SESSION_FORMAT_XXX
-	/* internally force logarithmic and Trim params to use Log-scale */
-	if (_desc.logarithmic || _parameter.type() == TrimAutomation) {
-		_interpolation = ControlList::Logarithmic;
-	}
-#endif
 
 	if (node.get_property (X_("state"), _state)) {
 		if (_state == Write) {

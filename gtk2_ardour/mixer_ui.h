@@ -26,6 +26,7 @@
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/eventbox.h>
 #include <gtkmm/label.h>
+#include <gtkmm/comboboxtext.h>
 #include <gtkmm/button.h>
 #include <gtkmm/frame.h>
 #include <gtkmm/menu.h>
@@ -98,6 +99,8 @@ public:
 	XMLNode& get_state ();
 	int set_state (const XMLNode&, int /* version */);
 
+	void save_plugin_order_file ();
+
 	void show_mixer_list (bool yn);
 	void show_monitor_section (bool);
 
@@ -146,7 +149,6 @@ private:
 	Gtk::VBox             mixer_scroller_vpacker;
 	Gtk::VBox             list_vpacker;
 	Gtk::Label            group_display_button_label;
-	Gtk::Button           group_display_button;
 	Gtk::ScrolledWindow   track_display_scroller;
 	Gtk::ScrolledWindow   group_display_scroller;
 	Gtk::ScrolledWindow   favorite_plugins_scroller;
@@ -154,6 +156,8 @@ private:
 	Gtk::Frame            track_display_frame;
 	Gtk::Frame            group_display_frame;
 	Gtk::Frame            favorite_plugins_frame;
+	Gtk::VBox             favorite_plugins_vbox;
+	Gtk::ComboBoxText     favorite_plugins_tag_combo;
 	ArdourWidgets::VPane  rhs_pane1;
 	ArdourWidgets::VPane  rhs_pane2;
 	ArdourWidgets::HPane  inner_pane;
@@ -166,6 +170,8 @@ private:
 	Gtk::EventBox         vca_scroller_base;
 	Gtk::HBox             out_packer;
 	ArdourWidgets::HPane  list_hpane;
+	Gtk::Button           add_button; // should really be an ArdourButton
+	Gtk::Button           add_vca_button;
 
 	MixerGroupTabs* _group_tabs;
 
@@ -365,7 +371,14 @@ private:
 
 	void store_current_favorite_order();
 	void refiller (ARDOUR::PluginInfoList& result, const ARDOUR::PluginInfoList& plugs);
+
+	void plugin_list_changed ();
+
 	void refill_favorite_plugins ();
+	void refill_tag_combo ();
+
+	void tag_combo_changed ();
+
 	void sync_treeview_from_favorite_order ();
 	void sync_treeview_favorite_ui_state (const Gtk::TreeModel::Path&, const Gtk::TreeModel::iterator&);
 	void save_favorite_ui_state (const Gtk::TreeModel::iterator& iter, const Gtk::TreeModel::Path& path);
@@ -375,6 +388,8 @@ private:
 
 	// true if mixer list is visible
 	bool _show_mixer_list;
+
+	bool _strip_selection_change_without_scroll;
 
 	mutable boost::weak_ptr<ARDOUR::Stripable> spilled_strip;
 

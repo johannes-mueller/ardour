@@ -138,6 +138,8 @@ OSC_GUI::OSC_GUI (OSC& p)
 	table->attach (gainmode_combo, 1, 2, n, n+1, AttachOptions(FILL|EXPAND), AttachOptions(0), 0, 0);
 	std::vector<std::string> gainmode_options;
 	gainmode_options.push_back (_("/strip/gain (dB)"));
+	gainmode_options.push_back (_("/strip/fader (Position) and dB in control name"));
+	gainmode_options.push_back (_("/strip/fader (Position) and /strip/gain (dB)"));
 	gainmode_options.push_back (_("/strip/fader (Position)"));
 
 	set_popdown_strings (gainmode_combo, gainmode_options);
@@ -154,6 +156,7 @@ OSC_GUI::OSC_GUI (OSC& p)
 	debug_options.push_back (_("Off"));
 	debug_options.push_back (_("Log invalid messages"));
 	debug_options.push_back (_("Log all messages"));
+	debug_options.push_back (_("Print surface information to Log window"));
 
 	set_popdown_strings (debug_combo, debug_options);
 	debug_combo.set_active ((int)cp.get_debug_mode());
@@ -495,6 +498,10 @@ OSC_GUI::debug_changed ()
 	else if (str == _("Log all messages")) {
 		cp.set_debug_mode (OSC::All);
 	}
+	else if (str == _("Print surface information to Log window")) {
+		cp.get_surfaces ();
+		debug_combo.set_active ((int)cp.get_debug_mode());
+	}
 	else {
 		std::cerr << "Invalid OSC Debug Mode\n";
 		assert (0);
@@ -578,8 +585,14 @@ OSC_GUI::gainmode_changed ()
 	if (str == _("/strip/gain (dB)")) {
 		cp.set_gainmode (0);
 	}
-	else if (str == _("/strip/fader (Position)")) {
+	else if (str == _("/strip/fader (Position) and dB in control name")) {
 		cp.set_gainmode (1);
+	}
+	else if (str == _("/strip/fader (Position) and /strip/gain (dB)")) {
+		cp.set_gainmode (2);
+	}
+	else if (str == _("/strip/fader (Position)")) {
+		cp.set_gainmode (3);
 	}
 	else {
 		std::cerr << "Invalid OSC Gain Mode\n";
@@ -980,6 +993,7 @@ OSC_GUI::load_preset (std::string preset)
 			gainmode_combo.set_active (atoi (prop->value().c_str()));
 		}
 		cp.gui_changed();
+		clear_device ();
 
 	}
 }

@@ -142,8 +142,8 @@ AutomationController::create(const Evoral::Parameter&             param,
 	const double lo        = ac->internal_to_interface(desc.lower);
 	const double up        = ac->internal_to_interface(desc.upper);
 	const double normal    = ac->internal_to_interface(desc.normal);
-	const double smallstep = ac->internal_to_interface(desc.lower + desc.smallstep);
-	const double largestep = ac->internal_to_interface(desc.lower + desc.largestep);
+	const double smallstep = ac->internal_to_interface(desc.lower + desc.smallstep) - lo;
+	const double largestep = ac->internal_to_interface(desc.lower + desc.largestep) - lo;
 
 	Gtk::Adjustment* adjustment = manage (
 		new Gtk::Adjustment (normal, lo, up, smallstep, largestep));
@@ -177,7 +177,10 @@ void
 AutomationController::value_adjusted ()
 {
 	if (!_ignore_change) {
-		_controllable->set_value (_controllable->interface_to_internal(_adjustment->get_value()), Controllable::NoGroup);
+		const double new_val = _controllable->interface_to_internal(_adjustment->get_value());
+		if (_controllable->user_double() != new_val) {
+			_controllable->set_value (new_val, Controllable::NoGroup);
+		}
 	}
 
 	/* A bar controller will automatically follow the adjustment, but for a
@@ -194,13 +197,13 @@ AutomationController::value_adjusted ()
 void
 AutomationController::start_touch()
 {
-	_controllable->start_touch (_controllable->session().transport_frame());
+	_controllable->start_touch (_controllable->session().transport_sample());
 }
 
 void
 AutomationController::end_touch ()
 {
-	_controllable->stop_touch (_controllable->session().transport_frame());
+	_controllable->stop_touch (_controllable->session().transport_sample());
 }
 
 bool
@@ -258,8 +261,8 @@ AutomationController::set_freq_beats(double beats)
 {
 	const ARDOUR::ParameterDescriptor& desc    = _controllable->desc();
 	const ARDOUR::Session&             session = _controllable->session();
-	const framepos_t                   pos     = session.transport_frame();
-	const ARDOUR::Tempo&               tempo   = session.tempo_map().tempo_at_frame (pos);
+	const samplepos_t                   pos     = session.transport_sample();
+	const ARDOUR::Tempo&               tempo   = session.tempo_map().tempo_at_sample (pos);
 	const double                       bpm     = tempo.note_types_per_minute();
 	const double                       bps     = bpm / 60.0;
 	const double                       freq    = bps / beats;

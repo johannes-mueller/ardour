@@ -55,6 +55,7 @@
 
 #include "ardour_window.h"
 #include "automation_controller.h"
+#include "gtk_pianokeyboard.h"
 
 namespace ARDOUR {
 	class PluginInsert;
@@ -71,7 +72,6 @@ namespace PBD {
 }
 
 namespace ArdourWidgets {
-	class ClickBox;
 	class FastMeter;
 }
 
@@ -147,6 +147,8 @@ protected:
 	ArdourWidgets::ArdourButton automation_write_all_button;
 	/** a button which sets all controls' automation setting to Touch */
 	ArdourWidgets::ArdourButton automation_touch_all_button;
+	/** a button which sets all controls' automation setting to Latch */
+	ArdourWidgets::ArdourButton automation_latch_all_button;
 
 	void set_latency_label ();
 
@@ -229,13 +231,13 @@ private:
 		ArdourWidgets::ArdourButton             automate_button;
 		Gtk::Label                              label;
 		ArdourWidgets::ArdourDropdown*          combo;
-		ArdourWidgets::ClickBox*                clickbox;
 		Gtk::FileChooserButton*                 file_button;
 		ArdourWidgets::ArdourSpinner*           spin_box;
 
 		bool                                    button;
 		bool                                    update_pending;
 		bool                                    ignore_change;
+
 
 		/* output */
 
@@ -252,7 +254,11 @@ private:
 		/* layout */
 		Gtk::Table* knobtable;
 		int x0, x1, y0, y1;
+
+		bool short_autostate; // modify with set_short_autostate below
 	};
+
+	void set_short_autostate(ControlUI* cui, bool value);
 
 	std::vector<ControlUI*>   input_controls; // workaround for preset load
 	std::vector<ControlUI*>   input_controls_with_automation;
@@ -296,6 +302,29 @@ private:
 	                        Gtk::FileChooserButton*            widget);
 	void path_property_changed (uint32_t key, const ARDOUR::Variant& value);
 
+	void scroller_size_request (Gtk::Requisition*);
+	Gtk::ScrolledWindow scroller;
+
+	Gtk::Expander   _plugin_pianokeyboard_expander;
+	PianoKeyboard*  _piano;
+	Gtk::Widget*    _pianomm;
+	Gtk::VBox       _pianobox;
+	Gtk::SpinButton _piano_velocity;
+	Gtk::SpinButton _piano_channel;
+
+	static void _note_on_event_handler (GtkWidget*, int, gpointer);
+	static void _note_off_event_handler (GtkWidget*, int, gpointer);
+	void note_on_event_handler (int);
+	void note_off_event_handler (int);
+
+	void toggle_pianokeyboard ();
+	void build_midi_table ();
+	void midi_refill_patches ();
+	void midi_bank_patch_change (uint8_t chn);
+	void midi_bank_patch_select (uint8_t chn, uint32_t bankpgm);
+	std::vector<ArdourWidgets::ArdourDropdown*> midi_pgmsel;
+	PBD::ScopedConnectionList midi_connections;
+	std::map<uint32_t, std::string> pgm_names;
 };
 
 class PluginUIWindow : public ArdourWindow

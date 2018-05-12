@@ -23,6 +23,8 @@
 #include <string>
 #include <list>
 
+#include <boost/smart_ptr/scoped_ptr.hpp>
+
 #include <gtkmm/separator.h>
 
 #include "pbd/error.h"
@@ -149,10 +151,9 @@ TimeAxisView::TimeAxisView (ARDOUR::Session* sess, PublicEditor& ed, TimeAxisVie
 	set_tooltip (name_label, _("Track/Bus name (double click to edit)"));
 
 	{
-		std::auto_ptr<Gtk::Entry> an_entry (new FocusEntry);
+		boost::scoped_ptr<Gtk::Entry> an_entry (new FocusEntry);
 		an_entry->set_name (X_("TrackNameEditor"));
-		Gtk::Requisition req;
-		an_entry->size_request (req);
+		Gtk::Requisition req = an_entry->size_request ();
 
 		name_label.set_size_request (-1, req.height);
 		name_label.set_ellipsize (Pango::ELLIPSIZE_MIDDLE);
@@ -797,7 +798,7 @@ TimeAxisView::set_samples_per_pixel (double fpp)
 }
 
 void
-TimeAxisView::show_timestretch (framepos_t start, framepos_t end, int layers, int layer)
+TimeAxisView::show_timestretch (samplepos_t start, samplepos_t end, int layers, int layer)
 {
 	for (Children::iterator i = children.begin(); i != children.end(); ++i) {
 		(*i)->show_timestretch (start, end, layers, layer);
@@ -818,8 +819,9 @@ TimeAxisView::show_selection (TimeSelection& ts)
 	double x1;
 	double x2;
 	double y2;
-	SelectionRect *rect;	time_axis_frame.show();
+	SelectionRect *rect;
 
+	time_axis_frame.show();
 
 	for (Children::iterator i = children.begin(); i != children.end(); ++i) {
 		if (!(*i)->selected () && !(*i)->propagate_time_selection ()) {
@@ -843,8 +845,8 @@ TimeAxisView::show_selection (TimeSelection& ts)
 	selection_group->raise_to_top();
 
 	for (list<AudioRange>::iterator i = ts.begin(); i != ts.end(); ++i) {
-		framepos_t start, end;
-		framecnt_t cnt;
+		samplepos_t start, end;
+		samplecnt_t cnt;
 
 		start = (*i).start;
 		end = (*i).end;
@@ -1017,14 +1019,14 @@ TimeAxisView::remove_child (boost::shared_ptr<TimeAxisView> child)
 }
 
 /** Get selectable things within a given range.
- *  @param start Start time in session frames.
- *  @param end End time in session frames.
+ *  @param start Start time in session samples.
+ *  @param end End time in session samples.
  *  @param top Top y range, in trackview coordinates (ie 0 is the top of the track view)
  *  @param bot Bottom y range, in trackview coordinates (ie 0 is the top of the track view)
  *  @param result Filled in with selectable things.
  */
 void
-TimeAxisView::get_selectables (framepos_t start, framepos_t end, double top, double bot, list<Selectable*>& results, bool within)
+TimeAxisView::get_selectables (samplepos_t start, samplepos_t end, double top, double bot, list<Selectable*>& results, bool within)
 {
 	for (Children::iterator i = children.begin(); i != children.end(); ++i) {
 		if (!(*i)->hidden()) {
@@ -1120,8 +1122,8 @@ TimeAxisView::compute_heights ()
 	Gtk::Table one_row_table (1, 1);
 	ArdourButton* test_button = manage (new ArdourButton);
 	const int border_width = 2;
-	const int frame_height = 2;
-	extra_height = (2 * border_width) + frame_height;
+	const int sample_height = 2;
+	extra_height = (2 * border_width) + sample_height;
 
 	window.add (one_row_table);
 	test_button->set_name ("mute button");

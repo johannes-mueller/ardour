@@ -212,7 +212,15 @@ GroupTabs::on_button_release_event (GdkEventButton*)
 				run_new_group_dialog (&routes, false);
 			} else {
 				boost::shared_ptr<RouteList> r = _session->get_routes ();
-				for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
+				/* First add new ones, then remove old ones.
+				 * We cannot allow the group to become temporarily empty, because
+				 * Session::route_removed_from_route_group() will delete empty groups.
+				 */
+				for (RouteList::const_iterator i = routes.begin(); i != routes.end(); ++i) {
+					/* RouteGroup::add () ignores routes already present in the set */
+					_dragging->group->add (*i);
+				}
+				for (RouteList::const_iterator i = r->begin(); i != r->end(); ++i) {
 
 					bool const was_in_tab = find (
 						_initial_dragging_routes.begin(), _initial_dragging_routes.end(), *i
@@ -222,10 +230,9 @@ GroupTabs::on_button_release_event (GdkEventButton*)
 
 					if (was_in_tab && !now_in_tab) {
 						_dragging->group->remove (*i);
-					} else if (!was_in_tab && now_in_tab) {
-						_dragging->group->add (*i);
 					}
 				}
+
 			}
 		}
 
@@ -442,7 +449,7 @@ GroupTabs::assign_group_to_master (uint32_t which, RouteGroup* group, bool renam
 	boost::shared_ptr<VCA> master;
 
 	if (which == 0) {
-		if (_session->vca_manager().create_vca (1)) {
+		if (_session->vca_manager().create_vca (1).empty ()) {
 			/* error */
 			return;
 		}
@@ -499,7 +506,7 @@ GroupTabs::assign_some_to_master (uint32_t which, RouteList rl, std::string vcan
 	bool set_name = false;
 
 	if (which == 0) {
-		if (_session->vca_manager().create_vca (1)) {
+		if (_session->vca_manager().create_vca (1).empty ()) {
 			/* error */
 			return;
 		}

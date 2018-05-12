@@ -113,7 +113,7 @@ protected:
 
 	PBD::ScopedConnectionList auditioner_connections;
 	void audition_active(bool);
-	void audition_progress(ARDOUR::framecnt_t, ARDOUR::framecnt_t);
+	void audition_progress(ARDOUR::samplecnt_t, ARDOUR::samplecnt_t);
 
 	void update_autoplay ();
 	void autoplay_toggled ();

@@ -28,6 +28,12 @@
 #include "fp8_base.h"
 #include "fp8_button.h"
 
+#ifdef FADERPORT16
+# define N_STRIPS 16
+#else
+# define N_STRIPS 8
+#endif
+
 namespace ARDOUR {
 	class Stripable;
 	class AutomationControl;
@@ -35,7 +41,7 @@ namespace ARDOUR {
 	class ReadOnlyControl;
 }
 
-namespace ArdourSurface {
+namespace ArdourSurface { namespace FP_NAMESPACE {
 
 class FP8Strip
 {
@@ -43,11 +49,32 @@ public:
 	FP8Strip (FP8Base& b, uint8_t id);
 	~FP8Strip ();
 
+	enum CtrlElement {
+		BtnSolo,
+		BtnMute,
+		BtnSelect,
+		Fader,
+		Meter,
+		Redux,
+		BarVal,
+		BarMode
+	};
+
+	static uint8_t midi_ctrl_id (CtrlElement type, uint8_t id);
+
 	FP8ButtonInterface& solo_button () { return _solo; }
 	FP8ButtonInterface& mute_button () { return _mute; }
 	FP8ButtonInterface& selrec_button () { return _selrec; }
 	FP8ButtonInterface& recarm_button () { return *_selrec.button_shift(); }
 	FP8ButtonInterface& select_button () { return *_selrec.button(); }
+
+	void set_select_button_color (uint32_t color) {
+		if ((color & 0xffffff00) == 0) {
+			select_button ().set_color (0xffffffff);
+		} else {
+			select_button ().set_color (color);
+		}
+	}
 
 	bool midi_touch (bool t);
 	bool midi_fader (float val);
@@ -170,5 +197,5 @@ private:
 	std::string _last_line[4];
 };
 
-} /* namespace */
+} } /* namespace */
 #endif /* _ardour_surfaces_fp8strip_h_ */

@@ -71,6 +71,7 @@ class LIBARDOUR_API Stripable : public SessionObject,
 	 */
 
 	bool is_auditioner() const { return _presentation_info.flags() & PresentationInfo::Auditioner; }
+	bool is_private_route() const { return is_auditioner(); }
 	bool is_master() const { return _presentation_info.flags() & PresentationInfo::MasterOut; }
 	bool is_monitor() const { return _presentation_info.flags() & PresentationInfo::MonitorOut; }
 
@@ -120,6 +121,9 @@ class LIBARDOUR_API Stripable : public SessionObject,
 	virtual boost::shared_ptr<AutomationControl> rec_enable_control() const { return boost::shared_ptr<AutomationControl>(); }
 	virtual boost::shared_ptr<AutomationControl> rec_safe_control() const { return boost::shared_ptr<AutomationControl>(); }
 
+	virtual bool slaved_to (boost::shared_ptr<VCA>) const = 0;
+	virtual bool slaved () const = 0;
+
 	/* "well-known" controls for panning. Any or all of these may return
 	 * null.
 	 */
@@ -145,6 +149,8 @@ class LIBARDOUR_API Stripable : public SessionObject,
 	virtual boost::shared_ptr<AutomationControl> filter_freq_controllable (bool hp /* false for LPF*/) const = 0;
 	virtual boost::shared_ptr<AutomationControl> filter_slope_controllable (bool hp) const = 0;
 	virtual boost::shared_ptr<AutomationControl> filter_enable_controllable (bool hp) const = 0;
+
+	virtual boost::shared_ptr<AutomationControl> tape_drive_controllable () const { return boost::shared_ptr<AutomationControl>(); }
 
 	/* "well-known" controls for a compressor in this route. Any or all may
 	 * be null.
@@ -176,6 +182,7 @@ class LIBARDOUR_API Stripable : public SessionObject,
 	 */
 	virtual boost::shared_ptr<AutomationControl> send_level_controllable (uint32_t n) const = 0;
 	virtual boost::shared_ptr<AutomationControl> send_enable_controllable (uint32_t n) const = 0;
+	virtual boost::shared_ptr<AutomationControl> send_pan_azi_controllable (uint32_t n) const = 0;
 
 	/* for the same value of @param n, this returns the name of the send
 	 * associated with the pair of controllables returned by the above two methods.

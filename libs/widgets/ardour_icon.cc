@@ -603,9 +603,9 @@ static void icon_transport_stop (cairo_t *cr, const int width, const int height)
 {
 	const int wh = std::min (width, height);
 	cairo_rectangle (cr,
-			(width - wh) * .5 + wh * .25,
-			(height - wh) * .5 + wh * .25,
-			wh * .5, wh * .5);
+			(width - wh) * .5 + wh * .225,
+			(height - wh) * .5 + wh * .225,
+			wh * .55, wh * .55);
 	VECTORICONSTROKEFILL(0.9); // small 'shine'
 }
 
@@ -614,7 +614,7 @@ static void icon_transport_play (cairo_t *cr, const int width, const int height)
 {
 	const int wh = std::min (width, height) * .5;
 	const double y = height * .5;
-	const double x = width - wh;
+	const double x = width * .5;
 
 	const double tri = ceil (.577 * wh); // 1/sqrt(3)
 
@@ -631,13 +631,14 @@ static void icon_transport_panic (cairo_t *cr, const int width, const int height
 {
 	const int wh = ceil (std::min (width, height) * .1) - .5;
 	const double xc = rint (width * .5);
-	const double yh = height;
+	const double yh = std::min (width, height);
+	const double y0 = (height - yh) * .5;
 	cairo_rectangle (cr,
-	                 xc - wh, yh *.19,
-	                 wh * 2,  yh *.41);
+	                 xc - wh, y0 + yh *.12,
+	                 wh * 2,  yh *.48);
 	VECTORICONSTROKEFILL(0.9);
 
-	cairo_arc (cr, xc, yh *.75, wh, 0, 2 * M_PI);
+	cairo_arc (cr, xc, y0 + yh *.78, wh, 0, 2 * M_PI);
 	VECTORICONSTROKEFILL(0.9);
 }
 
@@ -649,7 +650,7 @@ static void icon_transport_ck (cairo_t *cr,
 	// small play triangle
 	int wh = std::min (width, height);
 	const double y = height * .5;
-	const double x = width - wh * .5;
+	const double x = width * .5;
 	wh *= .18;
 	const double tri = ceil (.577 * wh * 2); // 1/sqrt(3)
 
@@ -692,19 +693,19 @@ static void icon_transport_loop (cairo_t *cr, const int width, const int height)
 	const double y = height * .5;
 	const double r = std::min (x, y);
 
-	cairo_arc          (cr, x, y, r * .62, 0, 2 * M_PI);
-	cairo_arc_negative (cr, x, y, r * .35, 2 * M_PI, 0);
+	cairo_arc          (cr, x, y, r * .58, 0, 2 * M_PI);
+	cairo_arc_negative (cr, x, y, r * .30, 2 * M_PI, 0);
 
-	VECTORICONSTROKEFILL(1.0);
+	VECTORICONSTROKEFILL (1.0);
 
 #define ARCARROW(rad, ang) \
 	x + (rad) * sin ((ang) * 2.0 * M_PI), y + (rad) * cos ((ang) * 2.0 * M_PI)
 
-	cairo_move_to (cr, ARCARROW(r * .35, .72));
-	cairo_line_to (cr, ARCARROW(r * .15, .72));
-	cairo_line_to (cr, ARCARROW(r * .56, .60));
-	cairo_line_to (cr, ARCARROW(r * .75, .72));
-	cairo_line_to (cr, ARCARROW(r * .62, .72));
+	cairo_move_to (cr, ARCARROW(r * .30, .72));
+	cairo_line_to (cr, ARCARROW(r * .11, .72));
+	cairo_line_to (cr, ARCARROW(r * .55, .60));
+	cairo_line_to (cr, ARCARROW(r * .74, .72));
+	cairo_line_to (cr, ARCARROW(r * .58, .72));
 
 	cairo_set_source_rgba (cr, 0, 0, 0, 1.0);
 	cairo_stroke_preserve (cr);

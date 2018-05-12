@@ -186,6 +186,7 @@ Backends=$APPLIB/backends
 
 Themes=$Shared/themes
 Templates=$Shared/templates
+PluginMetadata=$Shared/plugin_metadata
 ExportFormats=$Shared/export
 Locale=$Shared/locale
 MidiMaps=$Shared/midi_maps
@@ -231,7 +232,6 @@ mkdir -p $OSC
 mkdir -p $ExportFormats
 mkdir -p $Panners
 mkdir -p $Backends
-mkdir -p $Templates
 mkdir -p $Shared/doc
 
 # maybe set variables
@@ -253,7 +253,7 @@ fi
 # jack in the places where it might be
 #
 
-echo export 'PATH=/usr/local/bin:/opt/bin:$PATH' >> $ENVIRONMENT
+echo export 'PATH="/usr/local/bin:/opt/bin:$PATH"' >> $ENVIRONMENT
 
 # create startup helper script
 if test -d $BUILD_ROOT/vst; then
@@ -398,12 +398,11 @@ for x in $BUILD_ROOT/../osc/*.preset ; do
     cp "$x" $OSC
 done
 
-# Templates
-#for f in $BUILD_ROOT/../templates/* ; do
-#    if [ -d "$f" ] ; then
-#	echo Template: $f ; cp -r "$f" $Templates ;
-#    fi
-#done
+#Session templates
+cp -av $BUILD_ROOT/../templates $Templates
+
+# PluginMetadata
+cp -av $BUILD_ROOT/../plugin_metadata $PluginMetadata
 
 # ExportFormats
 # got to be careful with names here
@@ -492,7 +491,7 @@ EOF
 fi
 
 OURLIBDIR=$BUILD_ROOT/libs
-OURLIBS=$OURLIBDIR/surfaces/control_protocol:$OURLIBDIR/ardour:$OURLIBDIR/midi++2:$OURLIBDIR/pbd:$OURLIBDIR/gtkmm2ext:$OURLIBDIR/glibmm2:$OURLIBDIR/canvas:$OURLIBDIR/widgets:$OURLIBDIR/waveview:$OURLIBDIR/evoral:$OURLIBDIR/evoral/src/libsmf:$OURLIBDIR/audiographer:$OURLIBDIR/timecode:$OURLIBDIR/libltc:$OURLIBDIR/qm-dsp:$OURLIBDIR/ardouralsautil:$OURLIBDIR/ptformat:$BUILD_ROOT/gtk2_ardour
+OURLIBS=$OURLIBDIR/surfaces/control_protocol:$OURLIBDIR/ardour:$OURLIBDIR/midi++2:$OURLIBDIR/pbd:$OURLIBDIR/gtkmm2ext:$OURLIBDIR/glibmm2:$OURLIBDIR/canvas:$OURLIBDIR/widgets:$OURLIBDIR/waveview:$OURLIBDIR/evoral:$OURLIBDIR/evoral/src/libsmf:$OURLIBDIR/audiographer:$OURLIBDIR/temporal:$OURLIBDIR/libltc:$OURLIBDIR/qm-dsp:$OURLIBDIR/ardouralsautil:$OURLIBDIR/ptformat:$BUILD_ROOT/gtk2_ardour
 
 echo $OURLIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 

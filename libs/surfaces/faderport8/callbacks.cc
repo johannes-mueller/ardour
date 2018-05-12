@@ -30,8 +30,8 @@
 #include "pbd/i18n.h"
 
 using namespace ARDOUR;
-using namespace ArdourSurface;
-using namespace ArdourSurface::FP8Types;
+using namespace ArdourSurface::FP_NAMESPACE;
+using namespace ArdourSurface::FP_NAMESPACE::FP8Types;
 
 void
 FaderPort8::connect_session_signals ()
@@ -100,6 +100,7 @@ FaderPort8::notify_automation_mode_changed ()
 	_ctrls.button (FP8Controls::BtnATouch).set_active (as == Touch);
 	_ctrls.button (FP8Controls::BtnARead).set_active (as == Play);
 	_ctrls.button (FP8Controls::BtnAWrite).set_active (as == Write);
+	_ctrls.button (FP8Controls::BtnALatch).set_active (as == Latch);
 }
 
 void

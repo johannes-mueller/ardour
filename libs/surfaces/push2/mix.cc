@@ -28,8 +28,9 @@
 #include "pbd/enumwriter.h"
 
 #include "midi++/parser.h"
-#include "timecode/time.h"
-#include "timecode/bbt_time.h"
+
+#include "temporal/time.h"
+#include "temporal/bbt_time.h"
 
 #include "ardour/async_midi_port.h"
 #include "ardour/audioengine.h"
@@ -435,9 +436,9 @@ MixLayout::strip_vpot_touch (int n, bool touching)
 		boost::shared_ptr<AutomationControl> ac = stripable[n]->gain_control();
 		if (ac) {
 			if (touching) {
-				ac->start_touch (session.audible_frame());
+				ac->start_touch (session.audible_sample());
 			} else {
-				ac->stop_touch (session.audible_frame());
+				ac->stop_touch (session.audible_sample());
 			}
 		}
 	}

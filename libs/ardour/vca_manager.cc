@@ -78,7 +78,7 @@ VCAManager::vcas () const
 	return _vcas;
 }
 
-int
+VCAList
 VCAManager::create_vca (uint32_t howmany, std::string const & name_template)
 {
 	VCAList vcal;
@@ -113,9 +113,8 @@ VCAManager::create_vca (uint32_t howmany, std::string const & name_template)
 
 	_session.set_dirty ();
 
-	return 0;
+	return vcal;
 }
-
 
 void
 VCAManager::remove_vca (boost::shared_ptr<VCA> vca)
@@ -145,6 +144,20 @@ VCAManager::vca_by_number (int32_t n) const
 
 	for (VCAList::const_iterator i = _vcas.begin(); i != _vcas.end(); ++i) {
 		if ((*i)->number() == n) {
+			return *i;
+		}
+	}
+
+	return boost::shared_ptr<VCA>();
+}
+
+boost::shared_ptr<VCA>
+VCAManager::vca_by_name (std::string const& name) const
+{
+	Mutex::Lock lm (lock);
+
+	for (VCAList::const_iterator i = _vcas.begin(); i != _vcas.end(); ++i) {
+		if ((*i)->name() == name || (*i)->full_name() == name) {
 			return *i;
 		}
 	}

@@ -38,7 +38,14 @@ class LIBARDOUR_API LuaScriptInfo {
 		EditorHook,
 		EditorAction,
 		Snippet,
-		SessionSetup,
+		SessionInit,
+	};
+
+	/* binary flags, valid for ActionScripts */
+	enum ScriptSubType {
+		None          = 0x00,
+		RouteSetup    = 0x01,
+		SessionSetup  = 0x02,
 	};
 
 	static std::string type2str (const ScriptType t);
@@ -46,6 +53,7 @@ class LIBARDOUR_API LuaScriptInfo {
 
 	LuaScriptInfo (ScriptType t, const std::string &n, const std::string &p, const std::string &uid)
 	: type (t)
+	, subtype (0)
 	, name (n)
 	, path (p)
 	, unique_id (uid)
@@ -54,6 +62,8 @@ class LIBARDOUR_API LuaScriptInfo {
 	virtual ~LuaScriptInfo () { }
 
 	ScriptType type;
+	uint32_t   subtype;
+
 	std::string name;
 	std::string path;
 	std::string unique_id;
@@ -70,11 +80,12 @@ struct LIBARDOUR_API LuaScriptParam {
 				const std::string& n,
 				const std::string& t,
 				const std::string& d,
-				bool o)
+				bool o, bool p)
 			: name (n)
 			, title (t)
 			, dflt (d)
 			, optional (o)
+			, preseeded (p)
 			, is_set (false)
 			, value (d)
 	{}
@@ -83,6 +94,7 @@ struct LIBARDOUR_API LuaScriptParam {
 		std::string title;
 		std::string dflt;
 		bool optional;
+		bool preseeded;
 		bool is_set;
 		std::string value;
 };
@@ -125,6 +137,7 @@ private:
 	LuaScriptList *_sl_action;
 	LuaScriptList *_sl_snippet;
 	LuaScriptList *_sl_setup;
+	LuaScriptList *_sl_tracks;
 	LuaScriptList  _empty_script_info;
 
 	Glib::Threads::Mutex _lock;

@@ -33,11 +33,14 @@
 #include "canvas/canvas.h"
 #include "canvas/pixbuf.h"
 
+#include "LuaBridge/LuaBridge.h"
+
 #include "actions.h"
 #include "ardour_ui.h"
 #include "editing.h"
 #include "editor.h"
 #include "gui_thread.h"
+#include "luainstance.h"
 #include "main_clock.h"
 #include "time_axis_view.h"
 #include "ui_config.h"
@@ -183,8 +186,8 @@ Editor::register_actions ()
 	toggle_reg_sens (editor_actions, "show-editor-mixer", _("Show Editor Mixer"), sigc::mem_fun (*this, &Editor::editor_mixer_button_toggled));
 	toggle_reg_sens (editor_actions, "show-editor-list", _("Show Editor List"), sigc::mem_fun (*this, &Editor::editor_list_button_toggled));
 
-	reg_sens (editor_actions, "playhead-to-next-region-boundary", _("Playhead to Next Region Boundary"), sigc::bind (sigc::mem_fun(*this, &Editor::cursor_to_next_region_boundary), true ));
-	reg_sens (editor_actions, "playhead-to-next-region-boundary-noselection", _("Playhead to Next Region Boundary (No Track Selection)"), sigc::bind (sigc::mem_fun(*this, &Editor::cursor_to_next_region_boundary), false ));
+	reg_sens (editor_actions, "playhead-to-next-region-boundary", _("Playhead to Next Region Boundary"), sigc::bind (sigc::mem_fun(*this, &Editor::cursor_to_next_region_boundary), true));
+	reg_sens (editor_actions, "playhead-to-next-region-boundary-noselection", _("Playhead to Next Region Boundary (No Track Selection)"), sigc::bind (sigc::mem_fun(*this, &Editor::cursor_to_next_region_boundary), false));
 	reg_sens (editor_actions, "playhead-to-previous-region-boundary", _("Playhead to Previous Region Boundary"), sigc::bind (sigc::mem_fun(*this, &Editor::cursor_to_previous_region_boundary), true));
 	reg_sens (editor_actions, "playhead-to-previous-region-boundary-noselection", _("Playhead to Previous Region Boundary (No Track Selection)"), sigc::bind (sigc::mem_fun(*this, &Editor::cursor_to_previous_region_boundary), false));
 
@@ -276,6 +279,7 @@ Editor::register_actions ()
 	reg_sens (editor_actions, "temporal-zoom-out", _("Zoom Out"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_step), true));
 	reg_sens (editor_actions, "temporal-zoom-in", _("Zoom In"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_step), false));
 	reg_sens (editor_actions, "zoom-to-session", _("Zoom to Session"), sigc::mem_fun(*this, &Editor::temporal_zoom_session));
+	reg_sens (editor_actions, "zoom-to-extents", _("Zoom to Extents"), sigc::mem_fun(*this, &Editor::temporal_zoom_extents));
 	reg_sens (editor_actions, "zoom-to-selection", _("Zoom to Selection"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_selection), Both));
 	reg_sens (editor_actions, "zoom-to-selection-horiz", _("Zoom to Selection (Horizontal)"), sigc::bind (sigc::mem_fun(*this, &Editor::temporal_zoom_selection), Horizontal));
 	reg_sens (editor_actions, "toggle-zoom", _("Toggle Zoom State"), sigc::mem_fun(*this, &Editor::swap_visual_state));
@@ -539,55 +543,48 @@ Editor::register_actions ()
 	myactions.register_action (editor_actions, "set-edit-lock", S_("EditMode|Lock"), sigc::bind (sigc::mem_fun (*this, &Editor::set_edit_mode), Lock));
 	myactions.register_action (editor_actions, "cycle-edit-mode", _("Cycle Edit Mode"), sigc::mem_fun (*this, &Editor::cycle_edit_mode));
 
-	myactions.register_action (editor_actions, X_("SnapTo"), _("Snap to"));
-	myactions.register_action (editor_actions, X_("SnapMode"), _("Snap Mode"));
+	myactions.register_action (editor_actions, X_("GridChoice"), _("Snap & Grid"));
 
 	RadioAction::Group snap_mode_group;
-	myactions.register_radio_action (editor_actions, snap_mode_group, X_("snap-off"), _("No Grid"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_mode_chosen), Editing::SnapOff)));
-	myactions.register_radio_action (editor_actions, snap_mode_group, X_("snap-normal"), _("Grid"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_mode_chosen), Editing::SnapNormal)));
-	myactions.register_radio_action (editor_actions, snap_mode_group, X_("snap-magnetic"), _("Magnetic"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_mode_chosen), Editing::SnapMagnetic)));
+	/* deprecated */  myactions.register_radio_action (editor_actions, snap_mode_group, X_("snap-off"), _("No Grid"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_mode_chosen), Editing::SnapOff)));
+	/* deprecated */  myactions.register_radio_action (editor_actions, snap_mode_group, X_("snap-normal"), _("Grid"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_mode_chosen), Editing::SnapNormal)));  //deprecated
+	/* deprecated */  myactions.register_radio_action (editor_actions, snap_mode_group, X_("snap-magnetic"), _("Magnetic"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_mode_chosen), Editing::SnapMagnetic)));
 
-	myactions.register_action (editor_actions, X_("cycle-snap-mode"), _("Next Snap Mode"), sigc::mem_fun (*this, &Editor::cycle_snap_mode));
-	myactions.register_action (editor_actions, X_("next-snap-choice"), _("Next Snap Choice"), sigc::mem_fun (*this, &Editor::next_snap_choice));
-	myactions.register_action (editor_actions, X_("next-snap-choice-music-only"), _("Next Musical Snap Choice"), sigc::mem_fun (*this, &Editor::next_snap_choice_music_only));
-	myactions.register_action (editor_actions, X_("prev-snap-choice"), _("Previous Snap Choice"), sigc::mem_fun (*this, &Editor::prev_snap_choice));
-	myactions.register_action (editor_actions, X_("prev-snap-choice-music-only"), _("Previous Musical Snap Choice"), sigc::mem_fun (*this, &Editor::prev_snap_choice_music_only));
+	snap_mode_button.set_text (_("Snap"));
+	snap_mode_button.set_name ("mouse mode button");
+	snap_mode_button.signal_button_press_event().connect (sigc::mem_fun (*this, &Editor::snap_mode_button_clicked), false);
+
+	myactions.register_action (editor_actions, X_("cycle-snap-mode"), _("Toggle Snap"), sigc::mem_fun (*this, &Editor::cycle_snap_mode));
+	myactions.register_action (editor_actions, X_("next-grid-choice"), _("Next Quantize Grid Choice"), sigc::mem_fun (*this, &Editor::next_grid_choice));
+	myactions.register_action (editor_actions, X_("prev-grid-choice"), _("Previous Quantize Grid Choice"), sigc::mem_fun (*this, &Editor::prev_grid_choice));
 
 	Glib::RefPtr<ActionGroup> snap_actions = myactions.create_action_group (X_("Snap"));
-	RadioAction::Group snap_choice_group;
+	RadioAction::Group grid_choice_group;
 
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-cd-frame"), _("Snap to CD Frame"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToCDFrame)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-timecode-frame"), _("Snap to Timecode Frame"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToTimecodeFrame)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-timecode-seconds"), _("Snap to Timecode Seconds"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToTimecodeSeconds)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-timecode-minutes"), _("Snap to Timecode Minutes"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToTimecodeMinutes)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-seconds"), _("Snap to Seconds"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToSeconds)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-minutes"), _("Snap to Minutes"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToMinutes)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-thirtyseconds"),  grid_type_strings[(int)GridTypeBeatDiv32].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv32)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-twentyeighths"),  grid_type_strings[(int)GridTypeBeatDiv28].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv28)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-twentyfourths"),  grid_type_strings[(int)GridTypeBeatDiv24].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv24)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-twentieths"),     grid_type_strings[(int)GridTypeBeatDiv20].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv20)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-asixteenthbeat"), grid_type_strings[(int)GridTypeBeatDiv16].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv16)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-fourteenths"),    grid_type_strings[(int)GridTypeBeatDiv14].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv14)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-twelfths"),       grid_type_strings[(int)GridTypeBeatDiv12].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv12)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-tenths"),         grid_type_strings[(int)GridTypeBeatDiv10].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv10)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-eighths"),        grid_type_strings[(int)GridTypeBeatDiv8].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv8)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-sevenths"),       grid_type_strings[(int)GridTypeBeatDiv7].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv7)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-sixths"),         grid_type_strings[(int)GridTypeBeatDiv6].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv6)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-fifths"),         grid_type_strings[(int)GridTypeBeatDiv5].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv5)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-quarters"),       grid_type_strings[(int)GridTypeBeatDiv4].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv4)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-thirds"),         grid_type_strings[(int)GridTypeBeatDiv3].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv3)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-halves"),         grid_type_strings[(int)GridTypeBeatDiv2].c_str(),  (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeatDiv2)));
 
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-onetwentyeighths"), _("Snap to One Twenty Eighths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv128)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-sixtyfourths"), _("Snap to Sixty Fourths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv64)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-thirtyseconds"), _("Snap to Thirty Seconds"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv32)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-twentyeighths"), _("Snap to Twenty Eighths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv28)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-twentyfourths"), _("Snap to Twenty Fourths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv24)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-twentieths"), _("Snap to Twentieths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv20)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-asixteenthbeat"), _("Snap to Sixteenths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv16)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-fourteenths"), _("Snap to Fourteenths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv14)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-twelfths"), _("Snap to Twelfths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv12)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-tenths"), _("Snap to Tenths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv10)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-eighths"), _("Snap to Eighths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv8)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-sevenths"), _("Snap to Sevenths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv7)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-sixths"), _("Snap to Sixths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv6)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-fifths"), _("Snap to Fifths"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv5)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-quarters"), _("Snap to Quarters"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv4)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-thirds"), _("Snap to Thirds"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv3)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-halves"), _("Snap to Halves"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeatDiv2)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-timecode"),       grid_type_strings[(int)GridTypeTimecode].c_str(),      (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeTimecode)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-minsec"),         grid_type_strings[(int)GridTypeMinSec].c_str(),    (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeMinSec)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-cdframe"),        grid_type_strings[(int)GridTypeCDFrame].c_str(), (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeCDFrame)));
 
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-beat"), _("Snap to Beat"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBeat)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-bar"), _("Snap to Bar"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToBar)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-mark"), _("Snap to Mark"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToMark)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-region-start"), _("Snap to Region Start"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToRegionStart)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-region-end"), _("Snap to Region End"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToRegionEnd)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-region-sync"), _("Snap to Region Sync"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToRegionSync)));
-	myactions.register_radio_action (snap_actions, snap_choice_group, X_("snap-to-region-boundary"), _("Snap to Region Boundary"), (sigc::bind (sigc::mem_fun(*this, &Editor::snap_type_chosen), Editing::SnapToRegionBoundary)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-beat"),           grid_type_strings[(int)GridTypeBeat].c_str(),      (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBeat)));
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-bar"),            grid_type_strings[(int)GridTypeBar].c_str(),       (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeBar)));
+
+	myactions.register_radio_action (snap_actions, grid_choice_group, X_("grid-type-none"),           grid_type_strings[(int)GridTypeNone].c_str(),      (sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_chosen), Editing::GridTypeNone)));
 
 	myactions.register_toggle_action (editor_actions, X_("show-marker-lines"), _("Show Marker Lines"), sigc::mem_fun (*this, &Editor::toggle_marker_lines));
 
@@ -612,7 +609,7 @@ Editor::register_actions ()
 
 	xjadeo_ontop_action = Glib::RefPtr<ToggleAction>::cast_static (myactions.register_toggle_action (editor_actions, X_("toggle-vmon-ontop"), _("Always on Top"), sigc::bind (sigc::mem_fun (*this, &Editor::set_xjadeo_viewoption), (int) 1)));
 	xjadeo_timecode_action = Glib::RefPtr<ToggleAction>::cast_static (myactions.register_toggle_action (editor_actions, X_("toggle-vmon-timecode"), _("Timecode"), sigc::bind (sigc::mem_fun (*this, &Editor::set_xjadeo_viewoption), (int) 2)));
-	xjadeo_frame_action = Glib::RefPtr<ToggleAction>::cast_static (myactions.register_toggle_action (editor_actions, X_("toggle-vmon-frame"), _("Frame number"), sigc::bind (sigc::mem_fun (*this, &Editor::set_xjadeo_viewoption), (int) 3)));
+	xjadeo_sample_action = Glib::RefPtr<ToggleAction>::cast_static (myactions.register_toggle_action (editor_actions, X_("toggle-vmon-frame"), _("Frame number"), sigc::bind (sigc::mem_fun (*this, &Editor::set_xjadeo_viewoption), (int) 3)));
 	xjadeo_osdbg_action = Glib::RefPtr<ToggleAction>::cast_static (myactions.register_toggle_action (editor_actions, X_("toggle-vmon-osdbg"), _("Timecode Background"), sigc::bind (sigc::mem_fun (*this, &Editor::set_xjadeo_viewoption), (int) 4)));
 	xjadeo_fullscreen_action = Glib::RefPtr<ToggleAction>::cast_static (myactions.register_toggle_action (editor_actions, X_("toggle-vmon-fullscreen"), _("Fullscreen"), sigc::bind (sigc::mem_fun (*this, &Editor::set_xjadeo_viewoption), (int) 5)));
 	xjadeo_letterbox_action = Glib::RefPtr<ToggleAction>::cast_static (myactions.register_toggle_action (editor_actions, X_("toggle-vmon-letterbox"), _("Letterbox"), sigc::bind (sigc::mem_fun (*this, &Editor::set_xjadeo_viewoption), (int) 6)));
@@ -653,8 +650,8 @@ Editor::register_actions ()
 	xjadeo_ontop_action->set_sensitive (false);
 	xjadeo_timecode_action->set_active (false);
 	xjadeo_timecode_action->set_sensitive (false);
-	xjadeo_frame_action->set_active (false);
-	xjadeo_frame_action->set_sensitive (false);
+	xjadeo_sample_action->set_active (false);
+	xjadeo_sample_action->set_sensitive (false);
 	xjadeo_osdbg_action->set_active (false);
 	xjadeo_osdbg_action->set_sensitive (false);
 	xjadeo_fullscreen_action->set_active (false);
@@ -734,8 +731,6 @@ Editor::register_actions ()
 
 	myactions.register_toggle_action (editor_actions, X_("ToggleGroupTabs"), _("Show Group Tabs"), sigc::mem_fun (*this, &Editor::set_group_tabs));
 
-	myactions.register_toggle_action (editor_actions, X_("ToggleMeasureVisibility"), _("Show Measure Lines"), sigc::mem_fun (*this, &Editor::toggle_measure_visibility));
-
 	myactions.register_action (editor_actions, X_("toggle-midi-input-active"), _("Toggle MIDI Input Active for Editor-Selected Tracks/Busses"),
 	                           sigc::bind (sigc::mem_fun (*this, &Editor::toggle_midi_input_active), false));
 
@@ -743,6 +738,61 @@ Editor::register_actions ()
 	/* MIDI stuff */
 	reg_sens (editor_actions, "quantize", _("Quantize"), sigc::mem_fun (*this, &Editor::quantize_region));
 
+}
+
+static void _lua_print (std::string s) {
+#ifndef NDEBUG
+	std::cout << "LuaInstance: " << s << "\n";
+#endif
+	PBD::info << "LuaInstance: " << s << endmsg;
+}
+
+void
+Editor::trigger_script_by_name (const std::string script_name)
+{
+	string script_path;
+	ARDOUR::LuaScriptList scr = LuaScripting::instance ().scripts(LuaScriptInfo::EditorAction);
+	for (ARDOUR::LuaScriptList::const_iterator s = scr.begin(); s != scr.end(); ++s) {
+
+		if ((*s)->name == script_name) {
+			script_path = (*s)->path;
+
+			if (!Glib::file_test (script_path, Glib::FILE_TEST_EXISTS | Glib::FILE_TEST_IS_REGULAR)) {
+				cerr << "Lua Script action: path to " << script_path << " does not appear to be valid" << endl;
+				return;
+			}
+
+			LuaState lua;
+			lua.Print.connect (&_lua_print);  //ToDo
+			lua.sandbox (true);
+			lua_State* L = lua.getState();
+			LuaInstance::register_classes (L);
+			LuaBindings::set_session (L, _session);
+			luabridge::push <PublicEditor *> (L, &PublicEditor::instance());
+			lua_setglobal (L, "Editor");
+			lua.do_command ("function ardour () end");
+			lua.do_file (script_path);
+			luabridge::LuaRef args (luabridge::newTable (L));
+
+			//ToDo:  args?
+			//	args["how_many"]   = count;
+
+			try {
+				luabridge::LuaRef fn = luabridge::getGlobal (L, "factory");
+				if (fn.isFunction()) {
+					fn (args)();
+				}
+			} catch (luabridge::LuaException const& e) {
+				cerr << "LuaException:" << e.what () << endl;
+			} catch (...) {
+				cerr << "Lua script failed: " << script_path << endl;
+			}
+				
+			continue;  //script found; we're done
+		}
+	}
+
+	cerr << "Lua script was not found: " << script_name << endl;
 }
 
 void
@@ -872,7 +922,7 @@ Editor::toggle_xjadeo_proc (int state)
 	bool onoff = xjadeo_proc_action->get_active();
 	xjadeo_ontop_action->set_sensitive(onoff);
 	xjadeo_timecode_action->set_sensitive(onoff);
-	xjadeo_frame_action->set_sensitive(onoff);
+	xjadeo_sample_action->set_sensitive(onoff);
 	xjadeo_osdbg_action->set_sensitive(onoff);
 	xjadeo_fullscreen_action->set_sensitive(onoff);
 	xjadeo_letterbox_action->set_sensitive(onoff);
@@ -901,7 +951,7 @@ Editor::toggle_xjadeo_viewoption (int what, int state)
 			action = xjadeo_timecode_action;
 			break;
 		case 3:
-			action = xjadeo_frame_action;
+			action = xjadeo_sample_action;
 			break;
 		case 4:
 			action = xjadeo_osdbg_action;
@@ -943,7 +993,7 @@ Editor::set_xjadeo_viewoption (int what)
 			action = xjadeo_timecode_action;
 			break;
 		case 3:
-			action = xjadeo_frame_action;
+			action = xjadeo_sample_action;
 			break;
 		case 4:
 			action = xjadeo_osdbg_action;
@@ -968,125 +1018,88 @@ Editor::set_xjadeo_viewoption (int what)
 }
 
 void
-Editor::toggle_measure_visibility ()
-{
-	Glib::RefPtr<Action> act = ActionManager::get_action (X_("Editor"), X_("ToggleMeasureVisibility"));
-	if (act) {
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-		set_show_measures (tact->get_active());
-	}
-}
-
-void
 Editor::edit_current_meter ()
 {
-	ARDOUR::MeterSection* ms = const_cast<ARDOUR::MeterSection*>(&_session->tempo_map().meter_section_at_frame (ARDOUR_UI::instance()->primary_clock->absolute_time()));
+	ARDOUR::MeterSection* ms = const_cast<ARDOUR::MeterSection*>(&_session->tempo_map().meter_section_at_sample (ARDOUR_UI::instance()->primary_clock->absolute_time()));
 	edit_meter_section (ms);
 }
 
 void
 Editor::edit_current_tempo ()
 {
-	ARDOUR::TempoSection* ts = const_cast<ARDOUR::TempoSection*>(&_session->tempo_map().tempo_section_at_frame (ARDOUR_UI::instance()->primary_clock->absolute_time()));
+	ARDOUR::TempoSection* ts = const_cast<ARDOUR::TempoSection*>(&_session->tempo_map().tempo_section_at_sample (ARDOUR_UI::instance()->primary_clock->absolute_time()));
 	edit_tempo_section (ts);
 }
 
 RefPtr<RadioAction>
-Editor::snap_type_action (SnapType type)
+Editor::grid_type_action (GridType type)
 {
 	const char* action = 0;
 	RefPtr<Action> act;
 
 	switch (type) {
-	case Editing::SnapToCDFrame:
-		action = "snap-to-cd-frame";
+	case Editing::GridTypeBeatDiv32:
+		action = "grid-type-thirtyseconds";
 		break;
-	case Editing::SnapToTimecodeFrame:
-		action = "snap-to-timecode-frame";
+	case Editing::GridTypeBeatDiv28:
+		action = "grid-type-twentyeighths";
 		break;
-	case Editing::SnapToTimecodeSeconds:
-		action = "snap-to-timecode-seconds";
+	case Editing::GridTypeBeatDiv24:
+		action = "grid-type-twentyfourths";
 		break;
-	case Editing::SnapToTimecodeMinutes:
-		action = "snap-to-timecode-minutes";
+	case Editing::GridTypeBeatDiv20:
+		action = "grid-type-twentieths";
 		break;
-	case Editing::SnapToSeconds:
-		action = "snap-to-seconds";
+	case Editing::GridTypeBeatDiv16:
+		action = "grid-type-asixteenthbeat";
 		break;
-	case Editing::SnapToMinutes:
-		action = "snap-to-minutes";
+	case Editing::GridTypeBeatDiv14:
+		action = "grid-type-fourteenths";
 		break;
-	case Editing::SnapToBeatDiv128:
-		action = "snap-to-onetwentyeighths";
+	case Editing::GridTypeBeatDiv12:
+		action = "grid-type-twelfths";
 		break;
-	case Editing::SnapToBeatDiv64:
-		action = "snap-to-sixtyfourths";
+	case Editing::GridTypeBeatDiv10:
+		action = "grid-type-tenths";
 		break;
-	case Editing::SnapToBeatDiv32:
-		action = "snap-to-thirtyseconds";
+	case Editing::GridTypeBeatDiv8:
+		action = "grid-type-eighths";
 		break;
-	case Editing::SnapToBeatDiv28:
-		action = "snap-to-twentyeighths";
+	case Editing::GridTypeBeatDiv7:
+		action = "grid-type-sevenths";
 		break;
-	case Editing::SnapToBeatDiv24:
-		action = "snap-to-twentyfourths";
+	case Editing::GridTypeBeatDiv6:
+		action = "grid-type-sixths";
 		break;
-	case Editing::SnapToBeatDiv20:
-		action = "snap-to-twentieths";
+	case Editing::GridTypeBeatDiv5:
+		action = "grid-type-fifths";
 		break;
-	case Editing::SnapToBeatDiv16:
-		action = "snap-to-asixteenthbeat";
+	case Editing::GridTypeBeatDiv4:
+		action = "grid-type-quarters";
 		break;
-	case Editing::SnapToBeatDiv14:
-		action = "snap-to-fourteenths";
+	case Editing::GridTypeBeatDiv3:
+		action = "grid-type-thirds";
 		break;
-	case Editing::SnapToBeatDiv12:
-		action = "snap-to-twelfths";
+	case Editing::GridTypeBeatDiv2:
+		action = "grid-type-halves";
 		break;
-	case Editing::SnapToBeatDiv10:
-		action = "snap-to-tenths";
+	case Editing::GridTypeBeat:
+		action = "grid-type-beat";
 		break;
-	case Editing::SnapToBeatDiv8:
-		action = "snap-to-eighths";
+	case Editing::GridTypeBar:
+		action = "grid-type-bar";
 		break;
-	case Editing::SnapToBeatDiv7:
-		action = "snap-to-sevenths";
+	case Editing::GridTypeNone:
+		action = "grid-type-none";
 		break;
-	case Editing::SnapToBeatDiv6:
-		action = "snap-to-sixths";
+	case Editing::GridTypeTimecode:
+		action = "grid-type-timecode";
 		break;
-	case Editing::SnapToBeatDiv5:
-		action = "snap-to-fifths";
+	case Editing::GridTypeCDFrame:
+		action = "grid-type-cdframe";
 		break;
-	case Editing::SnapToBeatDiv4:
-		action = "snap-to-quarters";
-		break;
-	case Editing::SnapToBeatDiv3:
-		action = "snap-to-thirds";
-		break;
-	case Editing::SnapToBeatDiv2:
-		action = "snap-to-halves";
-		break;
-	case Editing::SnapToBeat:
-		action = "snap-to-beat";
-		break;
-	case Editing::SnapToBar:
-		action = "snap-to-bar";
-		break;
-	case Editing::SnapToMark:
-		action = "snap-to-mark";
-		break;
-	case Editing::SnapToRegionStart:
-		action = "snap-to-region-start";
-		break;
-	case Editing::SnapToRegionEnd:
-		action = "snap-to-region-end";
-		break;
-	case Editing::SnapToRegionSync:
-		action = "snap-to-region-sync";
-		break;
-	case Editing::SnapToRegionBoundary:
-		action = "snap-to-region-boundary";
+	case Editing::GridTypeMinSec:
+		action = "grid-type-minsec";
 		break;
 	default:
 		fatal << string_compose (_("programming error: %1: %2"), "Editor: impossible snap-to type", (int) type) << endmsg;
@@ -1100,371 +1113,113 @@ Editor::snap_type_action (SnapType type)
 		return ract;
 
 	} else  {
-		error << string_compose (_("programming error: %1"), "Editor::snap_type_chosen could not find action to match type.") << endmsg;
+		error << string_compose (_("programming error: %1"), "Editor::grid_type_chosen could not find action to match type.") << endmsg;
 		return RefPtr<RadioAction>();
 	}
 }
 
 void
-Editor::next_snap_choice ()
+Editor::next_grid_choice ()
 {
-	switch (_snap_type) {
-	case Editing::SnapToCDFrame:
-		set_snap_to (Editing::SnapToTimecodeFrame);
+	switch (_grid_type) {
+	case Editing::GridTypeBeatDiv32:
+		set_grid_to (Editing::GridTypeNone);
 		break;
-	case Editing::SnapToTimecodeFrame:
-		set_snap_to (Editing::SnapToTimecodeSeconds);
+	case Editing::GridTypeBeatDiv16:
+		set_grid_to (Editing::GridTypeBeatDiv32);
 		break;
-	case Editing::SnapToTimecodeSeconds:
-		set_snap_to (Editing::SnapToTimecodeMinutes);
+	case Editing::GridTypeBeatDiv8:
+		set_grid_to (Editing::GridTypeBeatDiv16);
 		break;
-	case Editing::SnapToTimecodeMinutes:
-		set_snap_to (Editing::SnapToSeconds);
+	case Editing::GridTypeBeatDiv4:
+		set_grid_to (Editing::GridTypeBeatDiv8);
 		break;
-	case Editing::SnapToSeconds:
-		set_snap_to (Editing::SnapToMinutes);
+	case Editing::GridTypeBeatDiv2:
+		set_grid_to (Editing::GridTypeBeatDiv4);
 		break;
-	case Editing::SnapToMinutes:
-		set_snap_to (Editing::SnapToBeatDiv128);
+	case Editing::GridTypeBeat:
+		set_grid_to (Editing::GridTypeBeatDiv2);
 		break;
-	case Editing::SnapToBeatDiv128:
-		set_snap_to (Editing::SnapToBeatDiv64);
+	case Editing::GridTypeBar:
+		set_grid_to (Editing::GridTypeBeat);
 		break;
-	case Editing::SnapToBeatDiv64:
-		set_snap_to (Editing::SnapToBeatDiv32);
+	case Editing::GridTypeNone:
+		set_grid_to (Editing::GridTypeBar);
 		break;
-	case Editing::SnapToBeatDiv32:
-		set_snap_to (Editing::SnapToBeatDiv28);
-		break;
-	case Editing::SnapToBeatDiv28:
-		set_snap_to (Editing::SnapToBeatDiv24);
-		break;
-	case Editing::SnapToBeatDiv24:
-		set_snap_to (Editing::SnapToBeatDiv20);
-		break;
-	case Editing::SnapToBeatDiv20:
-		set_snap_to (Editing::SnapToBeatDiv16);
-		break;
-	case Editing::SnapToBeatDiv16:
-		set_snap_to (Editing::SnapToBeatDiv14);
-		break;
-	case Editing::SnapToBeatDiv14:
-		set_snap_to (Editing::SnapToBeatDiv12);
-		break;
-	case Editing::SnapToBeatDiv12:
-		set_snap_to (Editing::SnapToBeatDiv10);
-		break;
-	case Editing::SnapToBeatDiv10:
-		set_snap_to (Editing::SnapToBeatDiv8);
-		break;
-	case Editing::SnapToBeatDiv8:
-		set_snap_to (Editing::SnapToBeatDiv7);
-		break;
-	case Editing::SnapToBeatDiv7:
-		set_snap_to (Editing::SnapToBeatDiv6);
-		break;
-	case Editing::SnapToBeatDiv6:
-		set_snap_to (Editing::SnapToBeatDiv5);
-		break;
-	case Editing::SnapToBeatDiv5:
-		set_snap_to (Editing::SnapToBeatDiv4);
-		break;
-	case Editing::SnapToBeatDiv4:
-		set_snap_to (Editing::SnapToBeatDiv3);
-		break;
-	case Editing::SnapToBeatDiv3:
-		set_snap_to (Editing::SnapToBeatDiv2);
-		break;
-	case Editing::SnapToBeatDiv2:
-		set_snap_to (Editing::SnapToBeat);
-		break;
-	case Editing::SnapToBeat:
-		set_snap_to (Editing::SnapToBar);
-		break;
-	case Editing::SnapToBar:
-		set_snap_to (Editing::SnapToMark);
-		break;
-	case Editing::SnapToMark:
-		set_snap_to (Editing::SnapToRegionStart);
-		break;
-	case Editing::SnapToRegionStart:
-		set_snap_to (Editing::SnapToRegionEnd);
-		break;
-	case Editing::SnapToRegionEnd:
-		set_snap_to (Editing::SnapToRegionSync);
-		break;
-	case Editing::SnapToRegionSync:
-		set_snap_to (Editing::SnapToRegionBoundary);
-		break;
-	case Editing::SnapToRegionBoundary:
-		set_snap_to (Editing::SnapToCDFrame);
-		break;
+	case Editing::GridTypeBeatDiv3:
+	case Editing::GridTypeBeatDiv6:
+	case Editing::GridTypeBeatDiv12:
+	case Editing::GridTypeBeatDiv24:
+	case Editing::GridTypeBeatDiv5:
+	case Editing::GridTypeBeatDiv10:
+	case Editing::GridTypeBeatDiv20:
+	case Editing::GridTypeBeatDiv7:
+	case Editing::GridTypeBeatDiv14:
+	case Editing::GridTypeBeatDiv28:
+	case Editing::GridTypeTimecode:
+	case Editing::GridTypeMinSec:
+	case Editing::GridTypeCDFrame:
+		break;  //do nothing
 	}
 }
 
 void
-Editor::prev_snap_choice ()
+Editor::prev_grid_choice ()
 {
-	switch (_snap_type) {
-	case Editing::SnapToCDFrame:
-		set_snap_to (Editing::SnapToRegionBoundary);
+	switch (_grid_type) {
+	case Editing::GridTypeBeatDiv32:
+		set_grid_to (Editing::GridTypeBeatDiv16);
 		break;
-	case Editing::SnapToTimecodeFrame:
-		set_snap_to (Editing::SnapToCDFrame);
+	case Editing::GridTypeBeatDiv16:
+		set_grid_to (Editing::GridTypeBeatDiv8);
 		break;
-	case Editing::SnapToTimecodeSeconds:
-		set_snap_to (Editing::SnapToTimecodeFrame);
+	case Editing::GridTypeBeatDiv8:
+		set_grid_to (Editing::GridTypeBeatDiv4);
 		break;
-	case Editing::SnapToTimecodeMinutes:
-		set_snap_to (Editing::SnapToTimecodeSeconds);
+	case Editing::GridTypeBeatDiv4:
+		set_grid_to (Editing::GridTypeBeatDiv2);
 		break;
-	case Editing::SnapToSeconds:
-		set_snap_to (Editing::SnapToTimecodeMinutes);
+	case Editing::GridTypeBeatDiv2:
+		set_grid_to (Editing::GridTypeBeat);
 		break;
-	case Editing::SnapToMinutes:
-		set_snap_to (Editing::SnapToSeconds);
+	case Editing::GridTypeBeat:
+		set_grid_to (Editing::GridTypeBar);
 		break;
-	case Editing::SnapToBeatDiv128:
-		set_snap_to (Editing::SnapToMinutes);
+	case Editing::GridTypeBar:
+		set_grid_to (Editing::GridTypeNone);
 		break;
-	case Editing::SnapToBeatDiv64:
-		set_snap_to (Editing::SnapToBeatDiv128);
+	case Editing::GridTypeNone:
+		set_grid_to (Editing::GridTypeBeatDiv32);
 		break;
-	case Editing::SnapToBeatDiv32:
-		set_snap_to (Editing::SnapToBeatDiv64);
-		break;
-	case Editing::SnapToBeatDiv28:
-		set_snap_to (Editing::SnapToBeatDiv32);
-		break;
-	case Editing::SnapToBeatDiv24:
-		set_snap_to (Editing::SnapToBeatDiv28);
-		break;
-	case Editing::SnapToBeatDiv20:
-		set_snap_to (Editing::SnapToBeatDiv24);
-		break;
-	case Editing::SnapToBeatDiv16:
-		set_snap_to (Editing::SnapToBeatDiv20);
-		break;
-	case Editing::SnapToBeatDiv14:
-		set_snap_to (Editing::SnapToBeatDiv16);
-		break;
-	case Editing::SnapToBeatDiv12:
-		set_snap_to (Editing::SnapToBeatDiv14);
-		break;
-	case Editing::SnapToBeatDiv10:
-		set_snap_to (Editing::SnapToBeatDiv12);
-		break;
-	case Editing::SnapToBeatDiv8:
-		set_snap_to (Editing::SnapToBeatDiv10);
-		break;
-	case Editing::SnapToBeatDiv7:
-		set_snap_to (Editing::SnapToBeatDiv8);
-		break;
-	case Editing::SnapToBeatDiv6:
-		set_snap_to (Editing::SnapToBeatDiv7);
-		break;
-	case Editing::SnapToBeatDiv5:
-		set_snap_to (Editing::SnapToBeatDiv6);
-		break;
-	case Editing::SnapToBeatDiv4:
-		set_snap_to (Editing::SnapToBeatDiv5);
-		break;
-	case Editing::SnapToBeatDiv3:
-		set_snap_to (Editing::SnapToBeatDiv4);
-		break;
-	case Editing::SnapToBeatDiv2:
-		set_snap_to (Editing::SnapToBeatDiv3);
-		break;
-	case Editing::SnapToBeat:
-		set_snap_to (Editing::SnapToBeatDiv2);
-		break;
-	case Editing::SnapToBar:
-		set_snap_to (Editing::SnapToBeat);
-		break;
-	case Editing::SnapToMark:
-		set_snap_to (Editing::SnapToBar);
-		break;
-	case Editing::SnapToRegionStart:
-		set_snap_to (Editing::SnapToMark);
-		break;
-	case Editing::SnapToRegionEnd:
-		set_snap_to (Editing::SnapToRegionStart);
-		break;
-	case Editing::SnapToRegionSync:
-		set_snap_to (Editing::SnapToRegionEnd);
-		break;
-	case Editing::SnapToRegionBoundary:
-		set_snap_to (Editing::SnapToRegionSync);
-		break;
+	case Editing::GridTypeBeatDiv3:
+	case Editing::GridTypeBeatDiv6:
+	case Editing::GridTypeBeatDiv12:
+	case Editing::GridTypeBeatDiv24:
+	case Editing::GridTypeBeatDiv5:
+	case Editing::GridTypeBeatDiv10:
+	case Editing::GridTypeBeatDiv20:
+	case Editing::GridTypeBeatDiv7:
+	case Editing::GridTypeBeatDiv14:
+	case Editing::GridTypeBeatDiv28:
+	case Editing::GridTypeTimecode:
+	case Editing::GridTypeMinSec:
+	case Editing::GridTypeCDFrame:
+		break;  //do nothing
 	}
 }
 
 void
-Editor::next_snap_choice_music_only ()
-{
-	switch (_snap_type) {
-	case Editing::SnapToMark:
-	case Editing::SnapToRegionStart:
-	case Editing::SnapToRegionEnd:
-	case Editing::SnapToRegionSync:
-	case Editing::SnapToRegionBoundary:
-	case Editing::SnapToCDFrame:
-	case Editing::SnapToTimecodeFrame:
-	case Editing::SnapToTimecodeSeconds:
-	case Editing::SnapToTimecodeMinutes:
-	case Editing::SnapToSeconds:
-	case Editing::SnapToMinutes:
-		set_snap_to (Editing::SnapToBeatDiv128);
-		break;
-	case Editing::SnapToBeatDiv128:
-		set_snap_to (Editing::SnapToBeatDiv64);
-		break;
-	case Editing::SnapToBeatDiv64:
-		set_snap_to (Editing::SnapToBeatDiv32);
-		break;
-	case Editing::SnapToBeatDiv32:
-		set_snap_to (Editing::SnapToBeatDiv28);
-		break;
-	case Editing::SnapToBeatDiv28:
-		set_snap_to (Editing::SnapToBeatDiv24);
-		break;
-	case Editing::SnapToBeatDiv24:
-		set_snap_to (Editing::SnapToBeatDiv20);
-		break;
-	case Editing::SnapToBeatDiv20:
-		set_snap_to (Editing::SnapToBeatDiv16);
-		break;
-	case Editing::SnapToBeatDiv16:
-		set_snap_to (Editing::SnapToBeatDiv14);
-		break;
-	case Editing::SnapToBeatDiv14:
-		set_snap_to (Editing::SnapToBeatDiv12);
-		break;
-	case Editing::SnapToBeatDiv12:
-		set_snap_to (Editing::SnapToBeatDiv10);
-		break;
-	case Editing::SnapToBeatDiv10:
-		set_snap_to (Editing::SnapToBeatDiv8);
-		break;
-	case Editing::SnapToBeatDiv8:
-		set_snap_to (Editing::SnapToBeatDiv7);
-		break;
-	case Editing::SnapToBeatDiv7:
-		set_snap_to (Editing::SnapToBeatDiv6);
-		break;
-	case Editing::SnapToBeatDiv6:
-		set_snap_to (Editing::SnapToBeatDiv5);
-		break;
-	case Editing::SnapToBeatDiv5:
-		set_snap_to (Editing::SnapToBeatDiv4);
-		break;
-	case Editing::SnapToBeatDiv4:
-		set_snap_to (Editing::SnapToBeatDiv3);
-		break;
-	case Editing::SnapToBeatDiv3:
-		set_snap_to (Editing::SnapToBeatDiv2);
-		break;
-	case Editing::SnapToBeatDiv2:
-		set_snap_to (Editing::SnapToBeat);
-		break;
-	case Editing::SnapToBeat:
-		set_snap_to (Editing::SnapToBar);
-		break;
-	case Editing::SnapToBar:
-		set_snap_to (Editing::SnapToBeatDiv128);
-		break;
-	}
-}
-
-void
-Editor::prev_snap_choice_music_only ()
-{
-	switch (_snap_type) {
-	case Editing::SnapToMark:
-	case Editing::SnapToRegionStart:
-	case Editing::SnapToRegionEnd:
-	case Editing::SnapToRegionSync:
-	case Editing::SnapToRegionBoundary:
-	case Editing::SnapToCDFrame:
-	case Editing::SnapToTimecodeFrame:
-	case Editing::SnapToTimecodeSeconds:
-	case Editing::SnapToTimecodeMinutes:
-	case Editing::SnapToSeconds:
-	case Editing::SnapToMinutes:
-		set_snap_to (Editing::SnapToBar);
-		break;
-	case Editing::SnapToBeatDiv128:
-		set_snap_to (Editing::SnapToBeat);
-		break;
-	case Editing::SnapToBeatDiv64:
-		set_snap_to (Editing::SnapToBeatDiv128);
-		break;
-	case Editing::SnapToBeatDiv32:
-		set_snap_to (Editing::SnapToBeatDiv64);
-		break;
-	case Editing::SnapToBeatDiv28:
-		set_snap_to (Editing::SnapToBeatDiv32);
-		break;
-	case Editing::SnapToBeatDiv24:
-		set_snap_to (Editing::SnapToBeatDiv28);
-		break;
-	case Editing::SnapToBeatDiv20:
-		set_snap_to (Editing::SnapToBeatDiv24);
-		break;
-	case Editing::SnapToBeatDiv16:
-		set_snap_to (Editing::SnapToBeatDiv20);
-		break;
-	case Editing::SnapToBeatDiv14:
-		set_snap_to (Editing::SnapToBeatDiv16);
-		break;
-	case Editing::SnapToBeatDiv12:
-		set_snap_to (Editing::SnapToBeatDiv14);
-		break;
-	case Editing::SnapToBeatDiv10:
-		set_snap_to (Editing::SnapToBeatDiv12);
-		break;
-	case Editing::SnapToBeatDiv8:
-		set_snap_to (Editing::SnapToBeatDiv10);
-		break;
-	case Editing::SnapToBeatDiv7:
-		set_snap_to (Editing::SnapToBeatDiv8);
-		break;
-	case Editing::SnapToBeatDiv6:
-		set_snap_to (Editing::SnapToBeatDiv7);
-		break;
-	case Editing::SnapToBeatDiv5:
-		set_snap_to (Editing::SnapToBeatDiv6);
-		break;
-	case Editing::SnapToBeatDiv4:
-		set_snap_to (Editing::SnapToBeatDiv5);
-		break;
-	case Editing::SnapToBeatDiv3:
-		set_snap_to (Editing::SnapToBeatDiv4);
-		break;
-	case Editing::SnapToBeatDiv2:
-		set_snap_to (Editing::SnapToBeatDiv3);
-		break;
-	case Editing::SnapToBeat:
-		set_snap_to (Editing::SnapToBeatDiv2);
-		break;
-	case Editing::SnapToBar:
-		set_snap_to (Editing::SnapToBeat);
-		break;
-	}
-}
-
-void
-Editor::snap_type_chosen (SnapType type)
+Editor::grid_type_chosen (GridType type)
 {
 	/* this is driven by a toggle on a radio group, and so is invoked twice,
 	   once for the item that became inactive and once for the one that became
 	   active.
 	*/
 
-	RefPtr<RadioAction> ract = snap_type_action (type);
+	RefPtr<RadioAction> ract = grid_type_action (type);
 
 	if (ract && ract->get_active()) {
-		set_snap_to (type);
+		set_grid_to (type);
 	}
 }
 
@@ -1506,8 +1261,6 @@ Editor::cycle_snap_mode ()
 {
 	switch (_snap_mode) {
 	case SnapOff:
-		set_snap_mode (SnapNormal);
-		break;
 	case SnapNormal:
 		set_snap_mode (SnapMagnetic);
 		break;
@@ -1524,6 +1277,10 @@ Editor::snap_mode_chosen (SnapMode mode)
 	   once for the item that became inactive and once for the one that became
 	   active.
 	*/
+
+	if (mode == SnapNormal) {
+		mode = SnapMagnetic;
+	}
 
 	RefPtr<RadioAction> ract = snap_mode_action (mode);
 

@@ -77,6 +77,7 @@
 #include "midi_region_view.h"
 #include "midi_time_axis.h"
 #include "patch_change_dialog.h"
+#include "patch_change_widget.h"
 #include "piano_roll_header.h"
 #include "playlist_selector.h"
 #include "plugin_selector.h"
@@ -190,10 +191,6 @@ MidiTimeAxisView::set_route (boost::shared_ptr<Route> rt)
 	ensure_pan_views (false);
 	update_control_names();
 	processors_changed (RouteProcessorChange ());
-
-	_route->processors_changed.connect (*this, invalidator (*this),
-	                                    boost::bind (&MidiTimeAxisView::processors_changed, this, _1),
-	                                    gui_context());
 
 	if (is_track()) {
 		_piano_roll_header->SetNoteSelection.connect (
@@ -387,11 +384,6 @@ MidiTimeAxisView::setup_midnam_patches ()
 }
 
 void
-MidiTimeAxisView::drop_instrument_ref ()
-{
-	midnam_connection.drop_connections ();
-}
-void
 MidiTimeAxisView::start_scroomer_update ()
 {
 	_note_range_changed_connection.disconnect();
@@ -412,17 +404,8 @@ MidiTimeAxisView::update_patch_selector ()
 
 	bool pluginprovided = false;
 	if (_route) {
-		boost::shared_ptr<Processor> the_instrument (_route->the_instrument());
-		boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert>(the_instrument);
+		boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert> (_route->the_instrument ());
 		if (pi && pi->plugin ()->has_midnam ()) {
-			midnam_connection.drop_connections ();
-			the_instrument->DropReferences.connect (midnam_connection, invalidator (*this),
-					boost::bind (&MidiTimeAxisView::drop_instrument_ref, this),
-					gui_context());
-			pi->plugin()->UpdateMidnam.connect (midnam_connection, invalidator (*this),
-					boost::bind (&Plugin::read_midnam, pi->plugin ()),
-					gui_context());
-
 			pluginprovided = true;
 			std::string model_name = pi->plugin ()->midnam_model ();
 			if (gui_property (X_("midnam-model-name")) != model_name) {
@@ -439,6 +422,7 @@ MidiTimeAxisView::update_patch_selector ()
 		_midnam_custom_device_mode_selector.show ();
 	}
 }
+
 
 void
 MidiTimeAxisView::model_changed(const std::string& model)
@@ -481,6 +465,10 @@ MidiTimeAxisView::model_changed(const std::string& model)
 	delete controller_menu;
 	controller_menu = 0;
 	build_automation_action_menu(false);
+
+	if (patch_change_dialog ()) {
+		patch_change_dialog ()->refresh ();
+	}
 }
 
 void
@@ -556,11 +544,11 @@ MidiTimeAxisView::append_extra_display_menu_items ()
 
 	items.push_back (MenuElem (_("Note Range"), *range_menu));
 	items.push_back (MenuElem (_("Note Mode"), *build_note_mode_menu()));
-	items.push_back (MenuElem (_("Channel Selector"),
+	items.push_back (MenuElem (_("Channel Selector..."),
 				   sigc::mem_fun(*this, &MidiTimeAxisView::toggle_channel_selector)));
 
-	items.push_back (MenuElem (_("Select Patch..."),
-				sigc::mem_fun(*this, &MidiTimeAxisView::send_patch_change)));
+	items.push_back (MenuElem (_("Patch Selector..."),
+				sigc::mem_fun(*this, &RouteUI::select_midi_patch)));
 
 	color_mode_menu = build_color_mode_menu();
 	if (color_mode_menu) {
@@ -1078,36 +1066,6 @@ MidiTimeAxisView::build_color_mode_menu()
 }
 
 void
-MidiTimeAxisView::send_patch_change ()
-{
-	if (!_route) {
-		return;
-	}
-
-	Evoral::PatchChange<Evoral::Beats> empty (Evoral::Beats(), 0, 0, 0);
-	PatchChangeDialog d (0, 0, empty, _route->instrument_info(), Gtk::Stock::OK);
-
-	if (d.run() == RESPONSE_CANCEL) {
-		return;
-	}
-	Evoral::PatchChange<Evoral::Beats> p (d.patch ());
-
-	uint8_t chn = p.channel();
-
-	boost::shared_ptr<AutomationControl> bank_msb = _route->automation_control(Evoral::Parameter (MidiCCAutomation, chn, MIDI_CTL_MSB_BANK), true);
-	boost::shared_ptr<AutomationControl> bank_lsb = _route->automation_control(Evoral::Parameter (MidiCCAutomation, chn, MIDI_CTL_LSB_BANK), true);
-	boost::shared_ptr<AutomationControl> program = _route->automation_control(Evoral::Parameter (MidiPgmChangeAutomation, chn), true);
-
-	if (!bank_msb || ! bank_lsb || !program) {
-		return;
-	}
-
-	bank_msb->set_value (p.bank_msb (), Controllable::NoGroup);
-	bank_lsb->set_value (p.bank_lsb (), Controllable::NoGroup);
-	program->set_value  (p.program () , Controllable::NoGroup);
-}
-
-void
 MidiTimeAxisView::set_note_mode(NoteMode mode, bool apply_to_selection)
 {
 	if (apply_to_selection) {
@@ -1460,7 +1418,7 @@ MidiTimeAxisView::toggle_note_selection (uint8_t note)
 }
 
 void
-MidiTimeAxisView::get_per_region_note_selection (list<pair<PBD::ID, set<boost::shared_ptr<Evoral::Note<Evoral::Beats> > > > >& selection)
+MidiTimeAxisView::get_per_region_note_selection (list<pair<PBD::ID, set<boost::shared_ptr<Evoral::Note<Temporal::Beats> > > > >& selection)
 {
 	_view->foreach_regionview (
 		sigc::bind (sigc::mem_fun (*this, &MidiTimeAxisView::get_per_region_note_selection_region_view), sigc::ref(selection)));
@@ -1491,14 +1449,14 @@ MidiTimeAxisView::toggle_note_selection_region_view (RegionView* rv, uint8_t not
 }
 
 void
-MidiTimeAxisView::get_per_region_note_selection_region_view (RegionView* rv, list<pair<PBD::ID, std::set<boost::shared_ptr<Evoral::Note<Evoral::Beats> > > > > &selection)
+MidiTimeAxisView::get_per_region_note_selection_region_view (RegionView* rv, list<pair<PBD::ID, std::set<boost::shared_ptr<Evoral::Note<Temporal::Beats> > > > > &selection)
 {
-	Evoral::Sequence<Evoral::Beats>::Notes selected;
+	Evoral::Sequence<Temporal::Beats>::Notes selected;
 	dynamic_cast<MidiRegionView*>(rv)->selection_as_notelist (selected, false);
 
-	std::set<boost::shared_ptr<Evoral::Note<Evoral::Beats> > > notes;
+	std::set<boost::shared_ptr<Evoral::Note<Temporal::Beats> > > notes;
 
-	Evoral::Sequence<Evoral::Beats>::Notes::iterator sel_it;
+	Evoral::Sequence<Temporal::Beats>::Notes::iterator sel_it;
 	for (sel_it = selected.begin(); sel_it != selected.end(); ++sel_it) {
 		notes.insert (*sel_it);
 	}
@@ -1577,10 +1535,10 @@ MidiTimeAxisView::automation_child_menu_item (Evoral::Parameter param)
 }
 
 boost::shared_ptr<MidiRegion>
-MidiTimeAxisView::add_region (framepos_t f, framecnt_t length, bool commit)
+MidiTimeAxisView::add_region (samplepos_t f, samplecnt_t length, bool commit)
 {
 	Editor* real_editor = dynamic_cast<Editor*> (&_editor);
-	MusicFrame pos (f, 0);
+	MusicSample pos (f, 0);
 
 	if (commit) {
 		real_editor->begin_reversible_command (Operations::create_region);
@@ -1598,8 +1556,8 @@ MidiTimeAxisView::add_region (framepos_t f, framecnt_t length, bool commit)
 
 	boost::shared_ptr<Region> region = (RegionFactory::create (src, plist));
 	/* sets beat position */
-	region->set_position (pos.frame, pos.division);
-	playlist()->add_region (region, pos.frame, 1.0, false, pos.division);
+	region->set_position (pos.sample, pos.division);
+	playlist()->add_region (region, pos.sample, 1.0, false, pos.division);
 	_session->add_command (new StatefulDiffCommand (playlist()));
 
 	if (commit) {
@@ -1674,7 +1632,7 @@ MidiTimeAxisView::contents_height_changed ()
 }
 
 bool
-MidiTimeAxisView::paste (framepos_t pos, const Selection& selection, PasteContext& ctx, const int32_t sub_num)
+MidiTimeAxisView::paste (samplepos_t pos, const Selection& selection, PasteContext& ctx, const int32_t sub_num)
 {
 	if (!_editor.internal_editing()) {
 		// Non-internal paste, paste regions like any other route

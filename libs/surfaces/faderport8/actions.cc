@@ -31,10 +31,10 @@
 
 #include "pbd/i18n.h"
 
-using namespace ARDOUR;
-using namespace ArdourSurface;
 using namespace std;
-using namespace ArdourSurface::FP8Types;
+using namespace ARDOUR;
+using namespace ArdourSurface::FP_NAMESPACE;
+using namespace ArdourSurface::FP_NAMESPACE::FP8Types;
 
 #define BindMethod(ID, CB) \
 	_ctrls.button (FP8Controls::ID).released.connect_same_thread (button_connections, boost::bind (&FaderPort8:: CB, this));
@@ -90,6 +90,7 @@ FaderPort8::setup_actions ()
 	BindFunction (BtnATouch, released, button_automation, ARDOUR::Touch);
 	BindFunction (BtnARead, released, button_automation, ARDOUR::Play);
 	BindFunction (BtnAWrite, released, button_automation, ARDOUR::Write);
+	BindFunction (BtnALatch, released, button_automation, ARDOUR::Latch);
 
 	_ctrls.button (FP8Controls::BtnEncoder).pressed.connect_same_thread (button_connections, boost::bind (&FaderPort8::button_encoder, this));
 	_ctrls.button (FP8Controls::BtnParam).pressed.connect_same_thread (button_connections, boost::bind (&FaderPort8::button_parameter, this));
@@ -322,7 +323,7 @@ FaderPort8::button_solo_clear ()
 				_solo_state.push_back (boost::weak_ptr<AutomationControl>(sc));
 			}
 		}
-		AccessAction ("Main", "cancel-solo");
+		cancel_all_solo (); // AccessAction ("Main", "cancel-solo");
 	} else {
 		/* restore solo */
 		boost::shared_ptr<ControlList> cl (new ControlList);
@@ -331,7 +332,7 @@ FaderPort8::button_solo_clear ()
 			if (!ac) {
 				continue;
 			}
-			ac->start_touch (ac->session().transport_frame());
+			ac->start_touch (ac->session().transport_sample());
 			cl->push_back (ac);
 		}
 		if (!cl->empty()) {
@@ -356,7 +357,7 @@ FaderPort8::button_mute_clear ()
 				continue;
 			}
 			cl->push_back (ac);
-			ac->start_touch (ac->session().transport_frame());
+			ac->start_touch (ac->session().transport_sample());
 		}
 		if (!cl->empty()) {
 			session->set_controls (cl, 1.0, PBD::Controllable::NoGroup);
@@ -396,7 +397,7 @@ FaderPort8::handle_encoder_pan (int steps)
 			ac = s->pan_azimuth_control ();
 		}
 		if (ac) {
-			ac->start_touch (ac->session().transport_frame());
+			ac->start_touch (ac->session().transport_sample());
 			if (steps == 0) {
 				ac->set_value (ac->normal(), PBD::Controllable::UseGroup);
 			} else {
@@ -420,7 +421,7 @@ FaderPort8::handle_encoder_link (int steps)
 	}
 
 	double v = ac->internal_to_interface (ac->get_value());
-	ac->start_touch (ac->session().transport_frame());
+	ac->start_touch (ac->session().transport_sample());
 
 	if (steps == 0) {
 		ac->set_value (ac->normal(), PBD::Controllable::UseGroup);
@@ -527,7 +528,7 @@ FaderPort8::button_encoder ()
 					ac = session->master_out()->gain_control ();
 				}
 				if (ac) {
-					ac->start_touch (ac->session().transport_frame());
+					ac->start_touch (ac->session().transport_sample());
 					ac->set_value (ac->normal(), PBD::Controllable::NoGroup);
 				}
 			}
@@ -541,8 +542,8 @@ FaderPort8::button_encoder ()
 				/* Don't add another mark if one exists within 1/100th of a second of
 				 * the current position and we're not rolling.
 				 */
-				framepos_t where = session->audible_frame();
-				if (session->transport_stopped() && session->locations()->mark_at (where, session->frame_rate() / 100.0)) {
+				samplepos_t where = session->audible_sample();
+				if (session->transport_stopped() && session->locations()->mark_at (where, session->sample_rate() / 100.0)) {
 					return;
 				}
 
@@ -607,7 +608,7 @@ FaderPort8::encoder_navigate (bool neg, int steps)
 				if (ac) {
 					double v = ac->internal_to_interface (ac->get_value());
 					v = std::max (0.0, std::min (1.0, v + steps * (neg ? -.01 : .01)));
-					ac->start_touch (ac->session().transport_frame());
+					ac->start_touch (ac->session().transport_sample());
 					ac->set_value (ac->interface_to_internal(v), PBD::Controllable::NoGroup);
 				}
 			}

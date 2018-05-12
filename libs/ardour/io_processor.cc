@@ -106,15 +106,15 @@ IOProcessor::set_output (boost::shared_ptr<IO> io)
 }
 
 XMLNode&
-IOProcessor::state (bool full_state)
+IOProcessor::state ()
 {
-	XMLNode& node (Processor::state (full_state));
+	XMLNode& node (Processor::state ());
 
 	node.set_property ("own-input", _own_input);
 
 	if (_input) {
 		if (_own_input) {
-			XMLNode& i (_input->state (full_state));
+			XMLNode& i (_input->get_state ());
 			// i.name() = X_("output");
 			node.add_child_nocopy (i);
 		} else {
@@ -126,7 +126,7 @@ IOProcessor::state (bool full_state)
 
 	if (_output) {
 		if (_own_output) {
-			XMLNode& o (_output->state (full_state));
+			XMLNode& o (_output->get_state ());
 			node.add_child_nocopy (o);
 		} else {
 			node.set_property ("output", _output->name ());
@@ -223,19 +223,11 @@ IOProcessor::set_state_2X (const XMLNode& node, int version)
 }
 
 void
-IOProcessor::silence (framecnt_t nframes, framepos_t /* start_frame */)
+IOProcessor::silence (samplecnt_t nframes, samplepos_t /* start_sample */)
 {
 	if (_own_output && _output) {
 		_output->silence (nframes);
 	}
-}
-
-void
-IOProcessor::increment_port_buffer_offset (pframes_t offset)
-{
-        if (_own_output && _output) {
-                _output->increment_port_buffer_offset (offset);
-        }
 }
 
 ChanCount

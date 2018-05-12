@@ -41,7 +41,9 @@
 #include "ardour/butler.h"
 #include "ardour/click.h"
 #include "ardour/debug.h"
+#include "ardour/disk_reader.h"
 #include "ardour/location.h"
+#include "ardour/playlist.h"
 #include "ardour/profile.h"
 #include "ardour/scene_changer.h"
 #include "ardour/session.h"
@@ -74,15 +76,6 @@ Session::add_post_transport_work (PostTransportWork ptw)
 	}
 
 	error << "Could not set post transport work! Crazy thread madness, call the programmers" << endmsg;
-}
-
-void
-Session::request_input_change_handling ()
-{
-	if (!(_state_of_the_state & (InitialConnecting|Deletion))) {
-		SessionEvent* ev = new SessionEvent (SessionEvent::InputConfigurationChange, SessionEvent::Add, SessionEvent::Immediate, 0, 0.0);
-		queue_event (ev);
-	}
 }
 
 void
@@ -133,44 +126,27 @@ Session::request_transport_speed_nonzero (double speed, bool as_default)
 }
 
 void
-Session::request_track_speed (Track* tr, double speed)
-{
-	SessionEvent* ev = new SessionEvent (SessionEvent::SetTrackSpeed, SessionEvent::Add, SessionEvent::Immediate, 0, speed);
-	ev->set_ptr (tr);
-	queue_event (ev);
-}
-
-void
 Session::request_stop (bool abort, bool clear_state)
 {
-	SessionEvent* ev = new SessionEvent (SessionEvent::SetTransportSpeed, SessionEvent::Add, SessionEvent::Immediate, audible_frame(), 0.0, abort, clear_state);
-	DEBUG_TRACE (DEBUG::Transport, string_compose ("Request transport stop, audible %3 transport %4 abort = %1, clear state = %2\n", abort, clear_state, audible_frame(), _transport_frame));
+	SessionEvent* ev = new SessionEvent (SessionEvent::SetTransportSpeed, SessionEvent::Add, SessionEvent::Immediate, audible_sample(), 0.0, abort, clear_state);
+	DEBUG_TRACE (DEBUG::Transport, string_compose ("Request transport stop, audible %3 transport %4 abort = %1, clear state = %2\n", abort, clear_state, audible_sample(), _transport_sample));
 	queue_event (ev);
 }
 
 void
-Session::request_locate (framepos_t target_frame, bool with_roll)
+Session::request_locate (samplepos_t target_sample, bool with_roll)
 {
-	SessionEvent *ev = new SessionEvent (with_roll ? SessionEvent::LocateRoll : SessionEvent::Locate, SessionEvent::Add, SessionEvent::Immediate, target_frame, 0, false);
-	DEBUG_TRACE (DEBUG::Transport, string_compose ("Request locate to %1\n", target_frame));
+	SessionEvent *ev = new SessionEvent (with_roll ? SessionEvent::LocateRoll : SessionEvent::Locate, SessionEvent::Add, SessionEvent::Immediate, target_sample, 0, false);
+	DEBUG_TRACE (DEBUG::Transport, string_compose ("Request locate to %1\n", target_sample));
 	queue_event (ev);
 }
 
 void
-Session::force_locate (framepos_t target_frame, bool with_roll)
+Session::force_locate (samplepos_t target_sample, bool with_roll)
 {
-	SessionEvent *ev = new SessionEvent (with_roll ? SessionEvent::LocateRoll : SessionEvent::Locate, SessionEvent::Add, SessionEvent::Immediate, target_frame, 0, true);
-	DEBUG_TRACE (DEBUG::Transport, string_compose ("Request forced locate to %1\n", target_frame));
+	SessionEvent *ev = new SessionEvent (with_roll ? SessionEvent::LocateRoll : SessionEvent::Locate, SessionEvent::Add, SessionEvent::Immediate, target_sample, 0, true);
+	DEBUG_TRACE (DEBUG::Transport, string_compose ("Request forced locate to %1\n", target_sample));
 	queue_event (ev);
-}
-
-void
-Session::unset_preroll_record_punch ()
-{
-	if (_preroll_record_punch_pos >= 0) {
-		remove_event (_preroll_record_punch_pos, SessionEvent::RecordStart);
-	}
-	_preroll_record_punch_pos = -1;
 }
 
 void
@@ -180,43 +156,21 @@ Session::unset_preroll_record_trim ()
 }
 
 void
-Session::request_preroll_record_punch (framepos_t rec_in, framecnt_t preroll)
+Session::request_preroll_record_trim (samplepos_t rec_in, samplecnt_t preroll)
 {
 	if (actively_recording ()) {
 		return;
 	}
-	unset_preroll_record_punch ();
-	unset_preroll_record_trim ();
-	framepos_t start = std::max ((framepos_t)0, rec_in - preroll);
-
-	_preroll_record_punch_pos = rec_in;
-	if (_preroll_record_punch_pos >= 0) {
-		replace_event (SessionEvent::RecordStart, _preroll_record_punch_pos);
-		config.set_punch_in (false);
-		config.set_punch_out (false);
-	}
-	maybe_enable_record ();
-	request_locate (start, true);
-	set_requested_return_frame (rec_in);
-}
-
-void
-Session::request_preroll_record_trim (framepos_t rec_in, framecnt_t preroll)
-{
-	if (actively_recording ()) {
-		return;
-	}
-	unset_preroll_record_punch ();
 	unset_preroll_record_trim ();
 
 	config.set_punch_in (false);
 	config.set_punch_out (false);
 
-	framepos_t pos = std::max ((framepos_t)0, rec_in - preroll);
+	samplepos_t pos = std::max ((samplepos_t)0, rec_in - preroll);
 	_preroll_record_trim_len = preroll;
 	maybe_enable_record ();
 	request_locate (pos, true);
-	set_requested_return_frame (rec_in);
+	set_requested_return_sample (rec_in);
 }
 
 void
@@ -288,7 +242,7 @@ Session::request_play_loop (bool yn, bool change_transport_roll)
 		if (!change_transport_roll && Config->get_seamless_loop() && transport_rolling()) {
 			// request an immediate locate to refresh the tracks
 			// after disabling looping
-			request_locate (_transport_frame-1, false);
+			request_locate (_transport_sample-1, false);
 		}
 	}
 }
@@ -314,10 +268,62 @@ Session::request_cancel_play_range ()
 }
 
 
+bool
+Session::solo_selection_active ()
+{
+	if ( _soloSelection.empty() ) {
+		return false;
+	}
+	return true;
+}
+
+void
+Session::solo_selection ( StripableList &list, bool new_state  )
+{
+	boost::shared_ptr<ControlList> solo_list (new ControlList);
+	boost::shared_ptr<ControlList> unsolo_list (new ControlList);
+
+	if (new_state)
+		_soloSelection = list;
+	else
+		_soloSelection.clear();
+	
+	boost::shared_ptr<RouteList> rl = get_routes();
+ 
+	for (ARDOUR::RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
+
+		if ( !(*i)->is_track() ) {
+			continue;
+		}
+		
+		boost::shared_ptr<Stripable> s (*i);
+
+		bool found = (std::find(list.begin(), list.end(), s) != list.end());
+		if ( new_state && found ) {
+			
+			solo_list->push_back (s->solo_control());
+			
+			//must invalidate playlists on selected tracks, so only selected regions get heard
+			boost::shared_ptr<Track> track = boost::dynamic_pointer_cast<Track> (*i);
+			if (track) {
+				boost::shared_ptr<Playlist> playlist = track->playlist();
+				if (playlist) {
+					playlist->ContentsChanged();
+				}
+			}
+		} else {
+			unsolo_list->push_back (s->solo_control());
+		}
+	}
+
+	set_controls (solo_list, 1.0, Controllable::NoGroup);
+	set_controls (unsolo_list, 0.0, Controllable::NoGroup);
+}
+
 void
 Session::realtime_stop (bool abort, bool clear_state)
 {
-	DEBUG_TRACE (DEBUG::Transport, string_compose ("realtime stop @ %1\n", _transport_frame));
+	DEBUG_TRACE (DEBUG::Transport, string_compose ("realtime stop @ %1\n", _transport_sample));
 	PostTransportWork todo = PostTransportWork (0);
 
 	/* assume that when we start, we'll be moving forwards */
@@ -337,7 +343,7 @@ Session::realtime_stop (bool abort, bool clear_state)
 		(*i)->realtime_handle_transport_stopped ();
 	}
 
-	DEBUG_TRACE (DEBUG::Transport, string_compose ("stop complete, auto-return scheduled for return to %1\n", _requested_return_frame));
+	DEBUG_TRACE (DEBUG::Transport, string_compose ("stop complete, auto-return scheduled for return to %1\n", _requested_return_sample));
 
 	/* the duration change is not guaranteed to have happened, but is likely */
 
@@ -359,6 +365,11 @@ Session::realtime_stop (bool abort, bool clear_state)
 	_clear_event_type (SessionEvent::RangeStop);
 	_clear_event_type (SessionEvent::RangeLocate);
 
+	//clear our solo-selection, if there is one
+	if ( solo_selection_active() ) {
+		solo_selection ( _soloSelection, false );
+	}
+	
 	/* if we're going to clear loop state, then force disabling record BUT only if we're not doing latched rec-enable */
 	disable_record (true, (!Config->get_latched_record_enable() && clear_state));
 
@@ -370,6 +381,7 @@ Session::realtime_stop (bool abort, bool clear_state)
 
 	_transport_speed = 0;
 	_target_transport_speed = 0;
+	_engine_speed = 1.0;
 
 	g_atomic_int_set (&_playback_load, 100);
 	g_atomic_int_set (&_capture_load, 100);
@@ -452,11 +464,11 @@ Session::butler_transport_work ()
 				tr->adjust_playback_buffering ();
 				/* and refill those buffers ... */
 			}
-			(*i)->non_realtime_locate (_transport_frame);
+			(*i)->non_realtime_locate (_transport_sample);
 		}
 		VCAList v = _vca_manager->vcas ();
 		for (VCAList::const_iterator i = v.begin(); i != v.end(); ++i) {
-			(*i)->non_realtime_locate (_transport_frame);
+			(*i)->non_realtime_locate (_transport_sample);
 		}
 	}
 
@@ -475,15 +487,6 @@ Session::butler_transport_work ()
 		}
 	}
 
-	if (ptw & PostTransportInputChange) {
-		for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
-			boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
-			if (tr) {
-				tr->non_realtime_input_change ();
-			}
-		}
-	}
-
 	if (ptw & PostTransportSpeed) {
 		non_realtime_set_speed ();
 	}
@@ -498,7 +501,7 @@ Session::butler_transport_work ()
 
 		if (!(ptw & PostTransportLocate)) {
 			for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
-				(*i)->non_realtime_locate (_transport_frame);
+				(*i)->non_realtime_locate (_transport_sample);
 
 				if (on_entry != g_atomic_int_get (&_butler->should_do_transport_work)) {
 					/* new request, stop seeking, and start again */
@@ -508,7 +511,7 @@ Session::butler_transport_work ()
 			}
 			VCAList v = _vca_manager->vcas ();
 			for (VCAList::const_iterator i = v.begin(); i != v.end(); ++i) {
-				(*i)->non_realtime_locate (_transport_frame);
+				(*i)->non_realtime_locate (_transport_sample);
 			}
 		}
 	}
@@ -540,8 +543,7 @@ Session::butler_transport_work ()
 
 	g_atomic_int_dec_and_test (&_butler->should_do_transport_work);
 
-	DEBUG_TRACE (DEBUG::Transport, string_compose (X_("Butler transport work all done after %1 usecs\n"), g_get_monotonic_time() - before));
-	DEBUG_TRACE (DEBUG::Transport, X_(string_compose ("Frame %1\n", _transport_frame)));
+	DEBUG_TRACE (DEBUG::Transport, string_compose (X_("Butler transport work all done after %1 usecs @ %2 trw = %3\n"), g_get_monotonic_time() - before, _transport_sample, _butler->transport_work_requested()));
 }
 
 void
@@ -551,7 +553,7 @@ Session::non_realtime_set_speed ()
 	for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
 		boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
 		if (tr) {
-			tr->non_realtime_set_speed ();
+			tr->non_realtime_speed_change ();
 		}
 	}
 }
@@ -576,21 +578,21 @@ Session::non_realtime_overwrite (int on_entry, bool& finished)
 void
 Session::non_realtime_locate ()
 {
-	DEBUG_TRACE (DEBUG::Transport, string_compose ("locate tracks to %1\n", _transport_frame));
+	DEBUG_TRACE (DEBUG::Transport, string_compose ("locate tracks to %1\n", _transport_sample));
 
 	if (Config->get_loop_is_mode() && get_play_loop()) {
 
 		Location *loc  = _locations->auto_loop_location();
 
-		if (!loc || (_transport_frame < loc->start() || _transport_frame >= loc->end())) {
+		if (!loc || (_transport_sample < loc->start() || _transport_sample >= loc->end())) {
 			/* jumped out of loop range: stop tracks from looping,
 			   but leave loop (mode) enabled.
 			 */
 			set_track_loop (false);
 
 		} else if (loc && Config->get_seamless_loop() &&
-                   ((loc->start() <= _transport_frame) ||
-                   (loc->end() > _transport_frame) ) ) {
+                   ((loc->start() <= _transport_sample) ||
+                   (loc->end() > _transport_sample) ) ) {
 
 			/* jumping to start of loop. This  might have been done before but it is
 			 * idempotent and cheap. Doing it here ensures that when we start playback
@@ -609,20 +611,36 @@ Session::non_realtime_locate ()
 	}
 
 
+	samplepos_t tf;
+
 	{
 		boost::shared_ptr<RouteList> rl = routes.reader();
+
+	  restart:
+		gint sc = g_atomic_int_get (&_seek_counter);
+		tf = _transport_sample;
+
 		for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
-			(*i)->non_realtime_locate (_transport_frame);
-		}
-	}
-	{
-		VCAList v = _vca_manager->vcas ();
-		for (VCAList::const_iterator i = v.begin(); i != v.end(); ++i) {
-			(*i)->non_realtime_locate (_transport_frame);
+			(*i)->non_realtime_locate (tf);
+			if (sc != g_atomic_int_get (&_seek_counter)) {
+				goto restart;
+			}
 		}
 	}
 
-	_scene_changer->locate (_transport_frame);
+	{
+		/* VCAs are quick to locate because they have no data (except
+		   automation) associated with them. Don't bother with a
+		   restart mechanism here, but do use the same transport sample
+		   that the Routes used.
+		*/
+		VCAList v = _vca_manager->vcas ();
+		for (VCAList::const_iterator i = v.begin(); i != v.end(); ++i) {
+			(*i)->non_realtime_locate (tf);
+		}
+	}
+
+	_scene_changer->locate (_transport_sample);
 
 	/* XXX: it would be nice to generate the new clicks here (in the non-RT thread)
 	   rather than clearing them so that the RT thread has to spend time constructing
@@ -633,7 +651,7 @@ Session::non_realtime_locate ()
 
 #ifdef USE_TRACKS_CODE_FEATURES
 bool
-Session::select_playhead_priority_target (framepos_t& jump_to)
+Session::select_playhead_priority_target (samplepos_t& jump_to)
 {
 	jump_to = -1;
 
@@ -709,7 +727,7 @@ Session::select_playhead_priority_target (framepos_t& jump_to)
 #else
 
 bool
-Session::select_playhead_priority_target (framepos_t& jump_to)
+Session::select_playhead_priority_target (samplepos_t& jump_to)
 {
 	if (config.get_external_sync() || !config.get_auto_return()) {
 		return false;
@@ -724,7 +742,7 @@ Session::select_playhead_priority_target (framepos_t& jump_to)
 void
 Session::follow_playhead_priority ()
 {
-	framepos_t target;
+	samplepos_t target;
 
 	if (select_playhead_priority_target (target)) {
 		request_locate (target);
@@ -746,7 +764,7 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 	boost::shared_ptr<RouteList> rl = routes.reader();
 	for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
 		boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
-		if (tr && tr->get_captured_frames () != 0) {
+		if (tr && tr->get_captured_samples () != 0) {
 			did_record = true;
 			break;
 		}
@@ -809,11 +827,11 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 		PostTransportWork ptw = post_transport_work ();
 
 		for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
-			(*i)->non_realtime_transport_stop (_transport_frame, !(ptw & PostTransportLocate) || pending_locate_flush);
+			(*i)->non_realtime_transport_stop (_transport_sample, !(ptw & PostTransportLocate) || pending_locate_flush);
 		}
 		VCAList v = _vca_manager->vcas ();
 		for (VCAList::const_iterator i = v.begin(); i != v.end(); ++i) {
-			(*i)->non_realtime_transport_stop (_transport_frame, !(ptw & PostTransportLocate) || pending_locate_flush);
+			(*i)->non_realtime_transport_stop (_transport_sample, !(ptw & PostTransportLocate) || pending_locate_flush);
 		}
 
 		update_latency_compensation ();
@@ -823,7 +841,7 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 
 	if (auto_return_enabled ||
 	    (ptw & PostTransportLocate) ||
-	    (_requested_return_frame >= 0) ||
+	    (_requested_return_sample >= 0) ||
 	    synced_to_engine()) {
 
 		if (pending_locate_flush) {
@@ -831,42 +849,42 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 		}
 
 		// rg: what is the logic behind this case?
-		// _requested_return_frame should be ignored when synced_to_engine/slaved.
-		// currently worked around in MTC_Slave by forcing _requested_return_frame to -1
+		// _requested_return_sample should be ignored when synced_to_engine/slaved.
+		// currently worked around in MTC_Slave by forcing _requested_return_sample to -1
 		// 2016-01-10
-		if ((auto_return_enabled || synced_to_engine() || _requested_return_frame >= 0) &&
+		if ((auto_return_enabled || synced_to_engine() || _requested_return_sample >= 0) &&
 		    !(ptw & PostTransportLocate)) {
 
 			/* no explicit locate queued */
 
 			bool do_locate = false;
 
-			if (_requested_return_frame >= 0) {
+			if (_requested_return_sample >= 0) {
 
 				/* explicit return request pre-queued in event list. overrides everything else */
 
-				_transport_frame = _requested_return_frame;
+				_transport_sample = _requested_return_sample;
 				do_locate = true;
 
 			} else {
-				framepos_t jump_to;
+				samplepos_t jump_to;
 
 				if (select_playhead_priority_target (jump_to)) {
 
-					_transport_frame = jump_to;
+					_transport_sample = jump_to;
 					do_locate = true;
 
 				} else if (abort) {
 
-					_transport_frame = _last_roll_location;
+					_transport_sample = _last_roll_location;
 					do_locate = true;
 				}
 			}
 
-			_requested_return_frame = -1;
+			_requested_return_sample = -1;
 
 			if (do_locate) {
-				_engine.transport_locate (_transport_frame);
+				_engine.transport_locate (_transport_sample);
 			}
 		}
 
@@ -891,7 +909,7 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 		DEBUG_TRACE (DEBUG::Transport, X_("Butler PTW: locate\n"));
 		for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
 			DEBUG_TRACE (DEBUG::Transport, string_compose ("Butler PTW: locate on %1\n", (*i)->name()));
-			(*i)->non_realtime_locate (_transport_frame);
+			(*i)->non_realtime_locate (_transport_sample);
 
 			if (on_entry != g_atomic_int_get (&_butler->should_do_transport_work)) {
 				finished = false;
@@ -904,7 +922,7 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 	{
 		VCAList v = _vca_manager->vcas ();
 		for (VCAList::const_iterator i = v.begin(); i != v.end(); ++i) {
-			(*i)->non_realtime_locate (_transport_frame);
+			(*i)->non_realtime_locate (_transport_sample);
 		}
 	}
 
@@ -927,7 +945,7 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 
 			   Something must be done. XXX
 			*/
-			send_mmc_locate (_transport_frame);
+			send_mmc_locate (_transport_sample);
 		}
 	}
 
@@ -963,10 +981,10 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 		}
 	}
 
-	PositionChanged (_transport_frame); /* EMIT SIGNAL */
+	PositionChanged (_transport_sample); /* EMIT SIGNAL */
 	DEBUG_TRACE (DEBUG::Transport, string_compose ("send TSC with speed = %1\n", _transport_speed));
 	TransportStateChange (); /* EMIT SIGNAL */
-	AutomationWatch::instance().transport_stop_automation_watches (_transport_frame);
+	AutomationWatch::instance().transport_stop_automation_watches (_transport_sample);
 
 	/* and start it up again if relevant */
 
@@ -995,7 +1013,7 @@ Session::check_declick_out ()
 	if (transport_sub_state & PendingDeclickOut) {
 
 		if (locate_required) {
-			start_locate (pending_locate_frame, pending_locate_roll, pending_locate_flush);
+			start_locate (pending_locate_sample, pending_locate_roll, pending_locate_flush);
 			transport_sub_state &= ~(PendingDeclickOut|PendingLocate);
 		} else {
 			if (!(transport_sub_state & StopPendingCapture)) {
@@ -1040,9 +1058,8 @@ Session::set_track_loop (bool yn)
 	boost::shared_ptr<RouteList> rl = routes.reader ();
 
 	for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
-		boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
-		if (tr && !tr->hidden()) {
-			tr->set_loop (yn ? loc : 0);
+		if (*i && !(*i)->is_private_route()) {
+			(*i)->set_loop (yn ? loc : 0);
 		}
 	}
 }
@@ -1095,8 +1112,8 @@ Session::set_play_loop (bool yn, double speed)
 			   in a fade-in when the loop restarts.  The AutoLoop event will peform the actual loop.
 			*/
 
-			framepos_t dcp;
-			framecnt_t dcl;
+			samplepos_t dcp;
+			samplecnt_t dcl;
 			auto_loop_declick_range (loc, dcp, dcl);
 			merge_event (new SessionEvent (SessionEvent::AutoLoopDeclick, SessionEvent::Replace, dcp, dcl, 0.0f));
 			merge_event (new SessionEvent (SessionEvent::AutoLoop, SessionEvent::Replace, loc->end(), loc->start(), 0.0f));
@@ -1140,9 +1157,9 @@ Session::flush_all_inserts ()
 }
 
 void
-Session::start_locate (framepos_t target_frame, bool with_roll, bool with_flush, bool for_loop_enabled, bool force)
+Session::start_locate (samplepos_t target_sample, bool with_roll, bool with_flush, bool for_loop_enabled, bool force)
 {
-	if (target_frame < 0) {
+	if (target_sample < 0) {
 		error << _("Locate called for negative sample position - ignored") << endmsg;
 		return;
 	}
@@ -1150,25 +1167,25 @@ Session::start_locate (framepos_t target_frame, bool with_roll, bool with_flush,
 	if (synced_to_engine()) {
 
 		double sp;
-		framepos_t pos;
+		samplepos_t pos;
 
 		_slave->speed_and_position (sp, pos);
 
-		if (target_frame != pos) {
+		if (target_sample != pos) {
 
 			if (config.get_jack_time_master()) {
 				/* actually locate now, since otherwise jack_timebase_callback
-				   will use the incorrect _transport_frame and report an old
+				   will use the incorrect _transport_sample and report an old
 				   and incorrect time to Jack transport
 				*/
-				locate (target_frame, with_roll, with_flush, for_loop_enabled, force);
+				locate (target_sample, with_roll, with_flush, for_loop_enabled, force);
 			}
 
 			/* tell JACK to change transport position, and we will
 			   follow along later in ::follow_slave()
 			*/
 
-			_engine.transport_locate (target_frame);
+			_engine.transport_locate (target_sample);
 
 			if (sp != 1.0f && with_roll) {
 				_engine.transport_start ();
@@ -1177,12 +1194,18 @@ Session::start_locate (framepos_t target_frame, bool with_roll, bool with_flush,
 		}
 
 	} else {
-		locate (target_frame, with_roll, with_flush, for_loop_enabled, force);
+		locate (target_sample, with_roll, with_flush, for_loop_enabled, force);
 	}
 }
 
+samplecnt_t
+Session::worst_latency_preroll () const
+{
+	return _worst_output_latency + _worst_input_latency;
+}
+
 int
-Session::micro_locate (framecnt_t distance)
+Session::micro_locate (samplecnt_t distance)
 {
 	boost::shared_ptr<RouteList> rl = routes.reader();
 	for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
@@ -1199,13 +1222,13 @@ Session::micro_locate (framecnt_t distance)
 		}
 	}
 
-	_transport_frame += distance;
+	_transport_sample += distance;
 	return 0;
 }
 
 /** @param with_mmc true to send a MMC locate command when the locate is done */
 void
-Session::locate (framepos_t target_frame, bool with_roll, bool with_flush, bool for_loop_enabled, bool force, bool with_mmc)
+Session::locate (samplepos_t target_sample, bool with_roll, bool with_flush, bool for_loop_enabled, bool force, bool with_mmc)
 {
 	bool need_butler = false;
 
@@ -1214,13 +1237,13 @@ Session::locate (framepos_t target_frame, bool with_roll, bool with_flush, bool 
 	 * already have the correct data in them, and thus there is no need to
 	 * actually tell the tracks to locate. What does need to be done,
 	 * though, is all the housekeeping that is associated with non-linear
-	 * changes in the value of _transport_frame.
+	 * changes in the value of _transport_sample.
 	 */
 
 	DEBUG_TRACE (DEBUG::Transport, string_compose ("rt-locate to %1, roll %2 flush %3 loop-enabled %4 force %5 mmc %6\n",
-	                                               target_frame, with_roll, with_flush, for_loop_enabled, force, with_mmc));
+	                                               target_sample, with_roll, with_flush, for_loop_enabled, force, with_mmc));
 
-	if (!force && _transport_frame == target_frame && !loop_changing && !for_loop_enabled) {
+	if (!force && _transport_sample == target_sample && !loop_changing && !for_loop_enabled) {
 
 		/* already at the desired position. Not forced to locate,
 		   the loop isn't changing, so unless we're told to
@@ -1244,25 +1267,32 @@ Session::locate (framepos_t target_frame, bool with_roll, bool with_flush, bool 
 
 		if (!(transport_sub_state & PendingDeclickOut)) {
 			transport_sub_state |= (PendingDeclickOut|PendingLocate);
-			pending_locate_frame = target_frame;
+			pending_locate_sample = target_sample;
 			pending_locate_roll = with_roll;
 			pending_locate_flush = with_flush;
+			cerr << "Declick scheduled ... back soon\n";
 			return;
 		}
 	}
 
+	cerr << "... now doing the actual locate\n";
+
 	// Update Timecode time
-	_transport_frame = target_frame;
-	_last_roll_or_reversal_location = target_frame;
-	timecode_time(_transport_frame, transmitting_timecode_time);
+	_transport_sample = target_sample;
+	// Bump seek counter so that any in-process locate in the butler
+	// thread(s?) can restart.
+	g_atomic_int_inc (&_seek_counter);
+	_last_roll_or_reversal_location = target_sample;
+	_remaining_latency_preroll = worst_latency_preroll ();
+	timecode_time(_transport_sample, transmitting_timecode_time); // XXX here?
 
 	/* do "stopped" stuff if:
 	 *
 	 * we are rolling AND
-	 *    no autoplay in effect AND
-         *       we're not going to keep rolling after the locate AND
-         *           !(playing a loop with JACK sync)
-         *
+	 * no autoplay in effect AND
+	 * we're not going to keep rolling after the locate AND
+	 * !(playing a loop with JACK sync)
+	 *
 	 */
 
 	bool transport_was_stopped = !transport_rolling();
@@ -1321,7 +1351,7 @@ Session::locate (framepos_t target_frame, bool with_roll, bool with_flush, bool 
 		Location* al = _locations->auto_loop_location();
 
 		if (al) {
-			if (_transport_frame < al->start() || _transport_frame >= al->end()) {
+			if (_transport_sample < al->start() || _transport_sample >= al->end()) {
 
 				// located outside the loop: cancel looping directly, this is called from event handling context
 
@@ -1339,7 +1369,7 @@ Session::locate (framepos_t target_frame, bool with_roll, bool with_flush, bool 
 					}
 				}
 
-			} else if (_transport_frame == al->start()) {
+			} else if (_transport_sample == al->start()) {
 
 				// located to start of loop - this is looping, basically
 
@@ -1363,7 +1393,7 @@ Session::locate (framepos_t target_frame, bool with_roll, bool with_flush, bool 
 
 					if (tr && tr->rec_enable_control()->get_value()) {
 						// tell it we've looped, so it can deal with the record state
-						tr->transport_looped (_transport_frame);
+						tr->transport_looped (_transport_sample);
 					}
 				}
 
@@ -1382,11 +1412,11 @@ Session::locate (framepos_t target_frame, bool with_roll, bool with_flush, bool 
 	_send_timecode_update = true;
 
 	if (with_mmc) {
-		send_mmc_locate (_transport_frame);
+		send_mmc_locate (_transport_sample);
 	}
 
-	_last_roll_location = _last_roll_or_reversal_location =  _transport_frame;
-	if (!synced_to_engine () || _transport_frame == _engine.transport_frame ()) {
+	_last_roll_location = _last_roll_or_reversal_location =  _transport_sample;
+	if (!synced_to_engine () || _transport_sample == _engine.transport_sample ()) {
 		Located (); /* EMIT SIGNAL */
 	}
 }
@@ -1396,28 +1426,12 @@ Session::locate (framepos_t target_frame, bool with_roll, bool with_flush, bool 
  *  @param speed New speed
  */
 void
-Session::set_transport_speed (double speed, framepos_t destination_frame, bool abort, bool clear_state, bool as_default)
+Session::set_transport_speed (double speed, samplepos_t destination_sample, bool abort, bool clear_state, bool as_default)
 {
 	DEBUG_TRACE (DEBUG::Transport, string_compose ("@ %5 Set transport speed to %1, abort = %2 clear_state = %3, current = %4 as_default %6\n",
-						       speed, abort, clear_state, _transport_speed, _transport_frame, as_default));
+						       speed, abort, clear_state, _transport_speed, _transport_sample, as_default));
 
-	if (_transport_speed == speed) {
-		if (as_default && speed == 0.0) { // => reset default transport speed. hacky or what?
-			_default_transport_speed = 1.0;
-		}
-		return;
-	}
-
-	if (actively_recording() && speed != 1.0 && speed != 0.0) {
-		/* no varispeed during recording */
-		DEBUG_TRACE (DEBUG::Transport, string_compose ("No varispeed during recording cur_speed %1, frame %2\n",
-						       _transport_speed, _transport_frame));
-		return;
-	}
-
-	_target_transport_speed = fabs(speed);
-
-	/* 8.0 max speed is somewhat arbitrary but based on guestimates regarding disk i/o capability
+	/* max speed is somewhat arbitrary but based on guestimates regarding disk i/o capability
 	   and user needs. We really need CD-style "skip" playback for ffwd and rewind.
 	*/
 
@@ -1426,6 +1440,32 @@ Session::set_transport_speed (double speed, framepos_t destination_frame, bool a
 	} else if (speed < 0) {
 		speed = max (-8.0, speed);
 	}
+
+	double new_engine_speed = 1.0;
+	if (speed != 0) {
+		new_engine_speed = fabs (speed);
+		if (speed < 0) speed = -1;
+		if (speed > 0) speed = 1;
+	}
+
+	if (_transport_speed == speed && new_engine_speed == _engine_speed) {
+		if (as_default && speed == 0.0) { // => reset default transport speed. hacky or what?
+			_default_transport_speed = 1.0;
+		}
+		return;
+	}
+
+#if 0 // TODO pref: allow vari-speed recording
+	if (actively_recording() && speed != 1.0 && speed != 0.0) {
+		/* no varispeed during recording */
+		DEBUG_TRACE (DEBUG::Transport, string_compose ("No varispeed during recording cur_speed %1, sample %2\n",
+						       _transport_speed, _transport_sample));
+		return;
+	}
+#endif
+
+	_target_transport_speed = fabs(speed);
+	_engine_speed = new_engine_speed;
 
 	if (transport_rolling() && speed == 0.0) {
 
@@ -1449,7 +1489,7 @@ Session::set_transport_speed (double speed, framepos_t destination_frame, bool a
 			bool const auto_return_enabled = (!config.get_external_sync() && (Config->get_auto_return_target_list() || abort));
 
 			if (!auto_return_enabled) {
-				_requested_return_frame = destination_frame;
+				_requested_return_sample = destination_sample;
 			}
 
 			stop_transport (abort);
@@ -1466,7 +1506,7 @@ Session::set_transport_speed (double speed, framepos_t destination_frame, bool a
 			Location *location = _locations->auto_loop_location();
 
 			if (location != 0) {
-				if (_transport_frame != location->start()) {
+				if (_transport_sample != location->start()) {
 
 					if (Config->get_seamless_loop()) {
 						/* force tracks to do their thing */
@@ -1496,6 +1536,9 @@ Session::set_transport_speed (double speed, framepos_t destination_frame, bool a
 
 		/* not zero, not 1.0 ... varispeed */
 
+		// TODO handled transport start..  _remaining_latency_preroll
+		// and reversal of playback direction.
+
 		if ((synced_to_engine()) && speed != 0.0 && speed != 1.0) {
 			warning << string_compose (
 				_("Global varispeed cannot be supported while %1 is connected to JACK transport control"),
@@ -1504,15 +1547,17 @@ Session::set_transport_speed (double speed, framepos_t destination_frame, bool a
 			return;
 		}
 
+#if 0
 		if (actively_recording()) {
 			return;
 		}
+#endif
 
-		if (speed > 0.0 && _transport_frame == current_end_frame()) {
+		if (speed > 0.0 && _transport_sample == current_end_sample()) {
 			return;
 		}
 
-		if (speed < 0.0 && _transport_frame == 0) {
+		if (speed < 0.0 && _transport_sample == 0) {
 			return;
 		}
 
@@ -1526,7 +1571,7 @@ Session::set_transport_speed (double speed, framepos_t destination_frame, bool a
 
 		if ((_transport_speed && speed * _transport_speed < 0.0) || (_last_transport_speed * speed < 0.0) || (_last_transport_speed == 0.0 && speed < 0.0)) {
 			todo = PostTransportWork (todo | PostTransportReverse);
-			_last_roll_or_reversal_location = _transport_frame;
+			_last_roll_or_reversal_location = _transport_sample;
 		}
 
 		_last_transport_speed = _transport_speed;
@@ -1534,14 +1579,6 @@ Session::set_transport_speed (double speed, framepos_t destination_frame, bool a
 
 		if (as_default) {
 			_default_transport_speed = speed;
-		}
-
-		boost::shared_ptr<RouteList> rl = routes.reader();
-		for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
-			boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
-			if (tr && tr->realtime_set_speed (tr->speed(), true)) {
-				todo = PostTransportWork (todo | PostTransportSpeed);
-			}
 		}
 
 		if (todo) {
@@ -1563,14 +1600,14 @@ Session::set_transport_speed (double speed, framepos_t destination_frame, bool a
 		 * The 0.2% dead-zone is somewhat arbitrary. Main use-case
 		 * for TransportStateChange() here is the ShuttleControl display.
 		 */
-		if (fabs (_signalled_varispeed - speed) > .002
+		if (fabs (_signalled_varispeed - actual_speed ()) > .002
 		    // still, signal hard changes to 1.0 and 0.0:
-		    || ( speed == 1.0 && _signalled_varispeed != 1.0)
-		    || ( speed == 0.0 && _signalled_varispeed != 0.0)
+		    || (actual_speed () == 1.0 && _signalled_varispeed != 1.0)
+		    || (actual_speed () == 0.0 && _signalled_varispeed != 0.0)
 		   )
 		{
 			TransportStateChange (); /* EMIT SIGNAL */
-			_signalled_varispeed = speed;
+			_signalled_varispeed = actual_speed ();
 		}
 	}
 }
@@ -1592,14 +1629,7 @@ Session::stop_transport (bool abort, bool clear_state)
 		/* stop has not yet been scheduled */
 
 		boost::shared_ptr<RouteList> rl = routes.reader();
-		framepos_t stop_target = audible_frame();
-
-		for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
-			boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
-			if (tr) {
-				tr->prepare_to_stop (_transport_frame, stop_target);
-			}
-		}
+		samplepos_t stop_target = audible_sample();
 
 		SubState new_bits;
 
@@ -1617,12 +1647,12 @@ Session::stop_transport (bool abort, bool clear_state)
 			*/
 
 			DEBUG_TRACE (DEBUG::Transport, string_compose ("stop transport requested @ %1, scheduled for + %2 = %3, abort = %4\n",
-								       _transport_frame, _worst_input_latency,
-								       _transport_frame + _worst_input_latency,
+								       _transport_sample, _worst_input_latency,
+								       _transport_sample + _worst_input_latency,
 								       abort));
 
 			SessionEvent *ev = new SessionEvent (SessionEvent::StopOnce, SessionEvent::Replace,
-							     _transport_frame + _worst_input_latency,
+							     _transport_sample + _worst_input_latency,
 							     0, 0, abort);
 
 			merge_event (ev);
@@ -1639,7 +1669,7 @@ Session::stop_transport (bool abort, bool clear_state)
 			/* Not recording, schedule a declick in the next process() cycle and then stop at its end */
 
 			new_bits = PendingDeclickOut;
-			DEBUG_TRACE (DEBUG::Transport, string_compose ("stop scheduled for next process cycle @ %1\n", _transport_frame));
+			DEBUG_TRACE (DEBUG::Transport, string_compose ("stop scheduled for next process cycle @ %1\n", _transport_sample));
 		}
 
 		/* we'll be called again after the declick */
@@ -1668,8 +1698,9 @@ Session::start_transport ()
 {
 	DEBUG_TRACE (DEBUG::Transport, "start_transport\n");
 
-	_last_roll_location = _transport_frame;
-	_last_roll_or_reversal_location = _transport_frame;
+	_last_roll_location = _transport_sample;
+	_last_roll_or_reversal_location = _transport_sample;
+	_remaining_latency_preroll = worst_latency_preroll ();
 
 	have_looped = false;
 
@@ -1679,7 +1710,14 @@ Session::start_transport ()
 
 	switch (record_status()) {
 	case Enabled:
-		if (!config.get_punch_in() && !preroll_record_punch_enabled()) {
+		if (!config.get_punch_in()) {
+			/* This is only for UIs (keep blinking rec-en before
+			 * punch-in, don't show rec-region etc). The UI still
+			 * depends on SessionEvent::PunchIn and ensuing signals.
+			 *
+			 * The disk-writers handle punch in/out internally
+			 * in their local delay-compensated timeframe.
+			 */
 			enable_record ();
 		}
 		break;
@@ -1699,17 +1737,9 @@ Session::start_transport ()
 	_transport_speed = _default_transport_speed;
 	_target_transport_speed = _transport_speed;
 
-	boost::shared_ptr<RouteList> rl = routes.reader();
-	for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
-		boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
-		if (tr) {
-			tr->realtime_set_speed (tr->speed(), true);
-		}
-	}
-
 	if (!_engine.freewheeling()) {
 		Timecode::Time time;
-		timecode_time_subframes (_transport_frame, time);
+		timecode_time_subframes (_transport_sample, time);
 		if (!dynamic_cast<MTC_Slave*>(_slave)) {
 			send_immediate_mmc (MIDI::MachineControlCommand (MIDI::MachineControl::cmdDeferredPlay));
 		}
@@ -1717,18 +1747,18 @@ Session::start_transport ()
 		if (actively_recording() && click_data && (config.get_count_in () || _count_in_once)) {
 			_count_in_once = false;
 			/* calculate count-in duration (in audio samples)
-			 * - use [fixed] tempo/meter at _transport_frame
-			 * - calc duration of 1 bar + time-to-beat before or at transport_frame
+			 * - use [fixed] tempo/meter at _transport_sample
+			 * - calc duration of 1 bar + time-to-beat before or at transport_sample
 			 */
-			const Tempo& tempo = _tempo_map->tempo_at_frame (_transport_frame);
-			const Meter& meter = _tempo_map->meter_at_frame (_transport_frame);
+			const Tempo& tempo = _tempo_map->tempo_at_sample (_transport_sample);
+			const Meter& meter = _tempo_map->meter_at_sample (_transport_sample);
 
 			const double num = meter.divisions_per_bar ();
 			const double den = meter.note_divisor ();
-			const double barbeat = _tempo_map->exact_qn_at_frame (_transport_frame, 0) * den / (4. * num);
+			const double barbeat = _tempo_map->exact_qn_at_sample (_transport_sample, 0) * den / (4. * num);
 			const double bar_fract = fmod (barbeat, 1.0); // fraction of bar elapsed.
 
-			_count_in_samples = meter.frames_per_bar (tempo, _current_frame_rate);
+			_count_in_samples = meter.samples_per_bar (tempo, _current_sample_rate);
 
 			double dt = _count_in_samples / num;
 			if (bar_fract == 0) {
@@ -1739,12 +1769,21 @@ Session::start_transport ()
 				_count_in_samples *= 1. + bar_fract;
 			}
 
+			if (_count_in_samples > _remaining_latency_preroll) {
+				_remaining_latency_preroll = _count_in_samples;
+			}
+
 			int clickbeat = 0;
-			framepos_t cf = _transport_frame - _count_in_samples;
-			while (cf < _transport_frame) {
-				add_click (cf - _worst_track_latency, clickbeat == 0);
+			samplepos_t cf = _transport_sample - _count_in_samples;
+			samplecnt_t offset = _click_io->connected_latency (true);
+			while (cf < _transport_sample + offset) {
+				add_click (cf, clickbeat == 0);
 				cf += dt;
 				clickbeat = fmod (clickbeat + 1, num);
+			}
+
+			if (_count_in_samples < _remaining_latency_preroll) {
+				_count_in_samples = _remaining_latency_preroll;
 			}
 		}
 	}
@@ -1792,15 +1831,15 @@ Session::post_transport ()
 }
 
 void
-Session::reset_rf_scale (framecnt_t motion)
+Session::reset_rf_scale (samplecnt_t motion)
 {
 	cumulative_rf_motion += motion;
 
-	if (cumulative_rf_motion < 4 * _current_frame_rate) {
+	if (cumulative_rf_motion < 4 * _current_sample_rate) {
 		rf_scale = 1;
-	} else if (cumulative_rf_motion < 8 * _current_frame_rate) {
+	} else if (cumulative_rf_motion < 8 * _current_sample_rate) {
 		rf_scale = 4;
-	} else if (cumulative_rf_motion < 16 * _current_frame_rate) {
+	} else if (cumulative_rf_motion < 16 * _current_sample_rate) {
 		rf_scale = 10;
 	} else {
 		rf_scale = 100;
@@ -1837,6 +1876,12 @@ Session::use_sync_source (Slave* new_slave)
 	delete _slave;
 	_slave = new_slave;
 
+
+	/* slave change, reset any DiskIO block on disk output because it is no
+	   longer valid with a new slave.
+	*/
+	DiskReader::set_no_disk_output (false);
+
 	MTC_Slave* mtc_slave = dynamic_cast<MTC_Slave*>(_slave);
 	if (mtc_slave) {
 		mtc_slave->ActiveChanged.connect_same_thread (mtc_status_connection, boost::bind (&Session::mtc_status_changed, this, _1));
@@ -1869,10 +1914,7 @@ Session::use_sync_source (Slave* new_slave)
 	boost::shared_ptr<RouteList> rl = routes.reader();
 	for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
 		boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
-		if (tr && !tr->hidden()) {
-			if (tr->realtime_set_speed (tr->speed(), true)) {
-				non_rt_required = true;
-			}
+		if (tr && !tr->is_private_route()) {
 			tr->set_slaved (_slave != 0);
 		}
 	}
@@ -1963,16 +2005,6 @@ Session::switch_to_sync_source (SyncSource src)
 }
 
 void
-Session::set_track_speed (Track* track, double speed)
-{
-	if (track->realtime_set_speed (speed, false)) {
-		add_post_transport_work (PostTransportSpeed);
-		_butler->schedule_transport_work ();
-		set_dirty ();
-	}
-}
-
-void
 Session::unset_play_range ()
 {
 	_play_range = false;
@@ -2020,18 +2052,18 @@ Session::set_play_range (list<AudioRange>& range, bool leave_rolling)
 			/* locating/stopping is subject to delays for declicking.
 			 */
 
-			framepos_t requested_frame = i->end;
+			samplepos_t requested_sample = i->end;
 
-			if (requested_frame > current_block_size) {
-				requested_frame -= current_block_size;
+			if (requested_sample > current_block_size) {
+				requested_sample -= current_block_size;
 			} else {
-				requested_frame = 0;
+				requested_sample = 0;
 			}
 
 			if (next == range.end()) {
-				ev = new SessionEvent (SessionEvent::RangeStop, SessionEvent::Add, requested_frame, 0, 0.0f);
+				ev = new SessionEvent (SessionEvent::RangeStop, SessionEvent::Add, requested_sample, 0, 0.0f);
 			} else {
-				ev = new SessionEvent (SessionEvent::RangeLocate, SessionEvent::Add, requested_frame, (*next).start, 0.0f);
+				ev = new SessionEvent (SessionEvent::RangeLocate, SessionEvent::Add, requested_sample, (*next).start, 0.0f);
 			}
 
 			merge_event (ev);
@@ -2060,7 +2092,7 @@ Session::set_play_range (list<AudioRange>& range, bool leave_rolling)
 }
 
 void
-Session::request_bounded_roll (framepos_t start, framepos_t end)
+Session::request_bounded_roll (samplepos_t start, samplepos_t end)
 {
 	AudioRange ar (start, end, 0);
 	list<AudioRange> lar;
@@ -2070,16 +2102,16 @@ Session::request_bounded_roll (framepos_t start, framepos_t end)
 }
 
 void
-Session::set_requested_return_frame (framepos_t return_to)
+Session::set_requested_return_sample (samplepos_t return_to)
 {
-	_requested_return_frame = return_to;
+	_requested_return_sample = return_to;
 }
 
 void
-Session::request_roll_at_and_return (framepos_t start, framepos_t return_to)
+Session::request_roll_at_and_return (samplepos_t start, samplepos_t return_to)
 {
 	SessionEvent *ev = new SessionEvent (SessionEvent::LocateRollLocate, SessionEvent::Add, SessionEvent::Immediate, return_to, 1.0);
-	ev->target2_frame = start;
+	ev->target2_sample = start;
 	queue_event (ev);
 }
 
@@ -2113,7 +2145,7 @@ Session::xrun_recovery ()
 {
 	++_xrun_count;
 
-	Xrun (_transport_frame); /* EMIT SIGNAL */
+	Xrun (_transport_sample); /* EMIT SIGNAL */
 
 	if (Config->get_stop_recording_on_xrun() && actively_recording()) {
 
@@ -2155,9 +2187,9 @@ Session::allow_auto_play (bool yn)
 }
 
 bool
-Session::maybe_stop (framepos_t limit)
+Session::maybe_stop (samplepos_t limit)
 {
-	if ((_transport_speed > 0.0f && _transport_frame >= limit) || (_transport_speed < 0.0f && _transport_frame == 0)) {
+	if ((_transport_speed > 0.0f && _transport_sample >= limit) || (_transport_speed < 0.0f && _transport_sample == 0)) {
 		if (synced_to_engine () && config.get_jack_time_master ()) {
 			_engine.transport_stop ();
 		} else if (!synced_to_engine ()) {
@@ -2169,7 +2201,7 @@ Session::maybe_stop (framepos_t limit)
 }
 
 void
-Session::send_mmc_locate (framepos_t t)
+Session::send_mmc_locate (samplepos_t t)
 {
 	if (t < 0) {
 		return;

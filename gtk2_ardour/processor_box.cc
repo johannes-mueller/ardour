@@ -113,6 +113,7 @@ RefPtr<Action> ProcessorBox::rename_action;
 RefPtr<Action> ProcessorBox::delete_action;
 RefPtr<Action> ProcessorBox::backspace_action;
 RefPtr<Action> ProcessorBox::manage_pins_action;
+RefPtr<Action> ProcessorBox::disk_io_action;
 RefPtr<Action> ProcessorBox::edit_action;
 RefPtr<Action> ProcessorBox::edit_generic_action;
 RefPtr<ActionGroup> ProcessorBox::processor_box_actions;
@@ -884,7 +885,7 @@ ProcessorEntry::Control::set_tooltip ()
 	std::string tt = _name + ": " + ARDOUR::value_as_string (c->desc(), c->get_value ());
 	string sm = Gtkmm2ext::markup_escape_text (tt);
 	_slider_persistant_tooltip.set_tip (sm);
-	ArdourWidgets::set_tooltip (_button, sm);
+	ArdourWidgets::set_tooltip (_button, Gtkmm2ext::markup_escape_text (sm));
 }
 
 void
@@ -911,7 +912,7 @@ ProcessorEntry::Control::start_touch ()
 	if (!c) {
 		return;
 	}
-	c->start_touch (c->session().transport_frame());
+	c->start_touch (c->session().transport_sample());
 }
 
 void
@@ -921,7 +922,7 @@ ProcessorEntry::Control::end_touch ()
 	if (!c) {
 		return;
 	}
-	c->stop_touch (c->session().transport_frame());
+	c->stop_touch (c->session().transport_sample());
 }
 
 void
@@ -1567,6 +1568,7 @@ ProcessorEntry::PluginInlineDisplay::PluginInlineDisplay (ProcessorEntry& e, boo
 	: PluginDisplay (p, max_height)
 	, _entry (e)
 	, _scroll (false)
+	, _given_max_height (max_height)
 {
 	std::string postfix = string_compose(_("\n%1+double-click to toggle inline-display"), Keyboard::tertiary_modifier_name ());
 
@@ -1638,16 +1640,20 @@ ProcessorEntry::PluginInlineDisplay::update_height_alloc (uint32_t inline_height
 	}
 
 	if (shm != _cur_height) {
-		if (_scroll == sc || _cur_height < shm) {
-			queue_resize ();
+		queue_resize ();
+		if (!_scroll && sc) {
+			_max_height = shm;
+		} else {
+			_max_height = _given_max_height;
 		}
 		_cur_height = shm;
 	}
+
 	_scroll = sc;
 }
 
 void
-ProcessorEntry::PluginInlineDisplay::display_frame (cairo_t* cr, double w, double h)
+ProcessorEntry::PluginInlineDisplay::display_sample (cairo_t* cr, double w, double h)
 {
 	Gtkmm2ext::rounded_rectangle (cr, .5, -1.5, w - 1, h + 1, 7);
 }
@@ -1686,7 +1692,7 @@ ProcessorEntry::LuaPluginDisplay::render_inline (cairo_t *cr, uint32_t width)
 #ifndef NDEBUG
 		cerr << "LuaException:" << e.what () << endl;
 #endif
-	}
+	} catch (...) { }
 	return 0;
 }
 
@@ -1944,7 +1950,7 @@ ProcessorBox::object_drop (DnDVBox<ProcessorEntry>* source, ProcessorEntry* posi
 		 * otherwise we'll end up with duplicate ports-names.
 		 * (this needs a better solution which retains connections)
 		 */
-		state.remove_nodes ("Processor");
+		state.remove_nodes_and_delete ("Processor");
 		proc->set_state (state, Stateful::loading_state_version);
 		boost::dynamic_pointer_cast<PluginInsert>(proc)->update_id (id);
 		return;
@@ -2105,7 +2111,6 @@ ProcessorBox::show_processor_menu (int arg)
 
 	/* Sensitise actions as approprioate */
 
-
 	const bool sensitive = !processor_display.selection().empty() && ! stub_processor_selected ();
 
 	paste_action->set_sensitive (!_p_selection.processors.empty());
@@ -2123,6 +2128,11 @@ ProcessorBox::show_processor_menu (int arg)
 	}
 
 	manage_pins_action->set_sensitive (pi != 0);
+	if (boost::dynamic_pointer_cast<Track>(_route)) {
+		disk_io_action->set_sensitive (true);
+	} else {
+		disk_io_action->set_sensitive (false);
+	}
 
 	/* allow editing with an Ardour-generated UI for plugin inserts with editors */
 	edit_action->set_sensitive (pi && pi->plugin()->has_editor ());
@@ -2391,9 +2401,13 @@ ProcessorBox::use_plugins (const SelectedPlugins& plugins)
 			return true;
 			// XXX SHAREDPTR delete plugin here .. do we even need to care?
 		} else if (plugins.size() == 1 && UIConfiguration::instance().get_open_gui_after_adding_plugin()) {
-			if (boost::dynamic_pointer_cast<PluginInsert>(processor)->plugin()->has_inline_display() && UIConfiguration::instance().get_prefer_inline_over_gui()) {
-				;
-			} else if (_session->engine().connected () && processor_can_be_edited (processor)) {
+			if (processor->what_can_be_automated ().size () == 0) {
+				; /* plugin without controls, don't show ui */
+			}
+			else if (boost::dynamic_pointer_cast<PluginInsert>(processor)->plugin()->has_inline_display() && UIConfiguration::instance().get_prefer_inline_over_gui()) {
+				; /* only show inline display */
+			}
+			else if (_session->engine().connected () && processor_can_be_edited (processor)) {
 				if ((*p)->has_editor ()) {
 					edit_processor (processor);
 				} else if (boost::dynamic_pointer_cast<PluginInsert>(processor)->plugin()->parameter_count() > 0) {
@@ -2623,27 +2637,34 @@ ProcessorBox::maybe_add_processor_to_ui_list (boost::weak_ptr<Processor> w)
 		return;
 	}
 
-	/* not on the list; add it */
+	/* see also ProcessorBox::get_editor_window */
+	bool have_ui = false;
 
-	string loc;
-#if 0 // is this still needed? Why?
-	if (_parent_strip) {
-		if (_parent_strip->mixer_owned()) {
-			loc = X_("M");
-		} else {
-			loc = X_("R");
-		}
-	} else {
-		loc = X_("P");
+	if (boost::dynamic_pointer_cast<PluginInsert> (p)) {
+		have_ui = true;
 	}
-#else
-	loc = X_("P");
-#endif
+	else if (boost::dynamic_pointer_cast<PortInsert> (p)) {
+		have_ui = true;
+	}
+	else if (boost::dynamic_pointer_cast<Send> (p)) {
+		if (!boost::dynamic_pointer_cast<InternalSend> (p)) {
+			have_ui = true;
+		}
+	}
+	else if (boost::dynamic_pointer_cast<Return> (p)) {
+		if (!boost::dynamic_pointer_cast<InternalReturn> (p)) {
+			have_ui = true;
+		}
+	}
+
+	if (!have_ui) {
+		return;
+	}
 
 	ProcessorWindowProxy* wp = new ProcessorWindowProxy (
-		string_compose ("%1-%2-%3", loc, _route->id(), p->id()),
-		this,
-		w);
+			string_compose ("P-%1-%2", _route->id(), p->id()),
+			this,
+			w);
 
 	const XMLNode* ui_xml = _session->extra_xml (X_("UI"));
 
@@ -2662,9 +2683,12 @@ ProcessorBox::maybe_add_processor_pin_mgr (boost::weak_ptr<Processor> w)
 	if (!p || p->pinmgr_proxy ()) {
 		return;
 	}
+	if (!boost::dynamic_pointer_cast<PluginInsert> (p)) {
+		return;
+	}
 
 	PluginPinWindowProxy* wp = new PluginPinWindowProxy (
-			string_compose ("PM-%2-%3", _route->id(), p->id()), w);
+			string_compose ("PM-%1-%2", _route->id(), p->id()), w);
 	wp->set_session (_session);
 
 	const XMLNode* ui_xml = _session->extra_xml (X_("UI"));
@@ -3307,7 +3331,7 @@ ProcessorBox::paste_processor_state (const XMLNodeList& nlist, boost::shared_ptr
 				 * We really would want Stateful::ForceIDRegeneration here :(
 				 */
 				XMLNode state (**niter);
-				state.remove_nodes ("Processor");
+				state.remove_nodes_and_delete ("Processor");
 
 				p->set_state (state, Stateful::current_state_version);
 				boost::dynamic_pointer_cast<PluginInsert>(p)->update_id (id);
@@ -3367,6 +3391,14 @@ ProcessorBox::ab_plugins ()
 	ab_direction = !ab_direction;
 }
 
+void
+ProcessorBox::set_disk_io_position (DiskIOPoint diop)
+{
+	boost::shared_ptr<Track> t = boost::dynamic_pointer_cast<Track> (_route);
+	if (t) {
+		t->set_disk_io_point (diop);
+	}
+}
 
 void
 ProcessorBox::clear_processors ()
@@ -3647,6 +3679,12 @@ ProcessorBox::register_actions ()
 		processor_box_actions, X_("manage-pins"), _("Pin Connections..."),
 		sigc::ptr_fun (ProcessorBox::rb_manage_pins));
 
+	/* Disk IO stuff */
+	disk_io_action = myactions.register_action (processor_box_actions, X_("disk-io-menu"), _("Disk I/O ..."));
+	myactions.register_action (processor_box_actions, X_("disk-io-prefader"), _("Pre-Fader."), sigc::bind (sigc::ptr_fun (ProcessorBox::rb_set_disk_io_position), DiskIOPreFader));
+	myactions.register_action (processor_box_actions, X_("disk-io-postfader"), _("Post-Fader."), sigc::bind (sigc::ptr_fun (ProcessorBox::rb_set_disk_io_position), DiskIOPostFader));
+	myactions.register_action (processor_box_actions, X_("disk-io-custom"), _("Custom."), sigc::bind (sigc::ptr_fun (ProcessorBox::rb_set_disk_io_position), DiskIOCustom));
+
 	/* show editors */
 	edit_action = myactions.register_action (
 		processor_box_actions, X_("edit"), _("Edit..."),
@@ -3677,6 +3715,16 @@ ProcessorBox::rb_ab_plugins ()
 	}
 
 	_current_processor_box->ab_plugins ();
+}
+
+void
+ProcessorBox::rb_set_disk_io_position (DiskIOPoint diop)
+{
+	if (_current_processor_box == 0) {
+		return;
+	}
+
+	_current_processor_box->set_disk_io_position (diop);
 }
 
 void

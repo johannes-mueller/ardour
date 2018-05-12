@@ -31,6 +31,8 @@
 #include <fftw3.h>
 #endif
 
+#include <curl/curl.h>
+
 #include "pbd/error.h"
 #include "pbd/file_utils.h"
 #include "pbd/textreceiver.h"
@@ -135,7 +137,7 @@ static void ardour_g_log (const gchar *log_domain, GLogLevelFlags log_level, con
 static gboolean
 tell_about_backend_death (void* /* ignored */)
 {
-	if (AudioEngine::instance()->processed_frames() == 0) {
+	if (AudioEngine::instance()->processed_samples() == 0) {
 		/* died during startup */
 		MessageDialog msg (string_compose (_("The audio backend (%1) has failed, or terminated"), AudioEngine::instance()->current_backend_name()), false);
 		msg.set_position (Gtk::WIN_POS_CENTER);
@@ -288,6 +290,11 @@ int main (int argc, char *argv[])
 {
 	ARDOUR::check_for_old_configuration_files();
 
+	/* global init is not thread safe.*/
+	if (curl_global_init (CURL_GLOBAL_DEFAULT)) {
+		cerr << "curl_global_init() failed. The web is gone. We're all doomed." << endl;
+	}
+
 	fixup_bundle_environment (argc, argv, localedir);
 
 	load_custom_fonts(); /* needs to happen before any gtk and pango init calls */
@@ -366,7 +373,7 @@ int main (int argc, char *argv[])
 	}
 
 	if (no_splash) {
-		cerr << _("Copyright (C) 1999-2015 Paul Davis") << endl
+		cerr << _("Copyright (C) 1999-2018 Paul Davis") << endl
 		     << _("Some portions Copyright (C) Steve Harris, Ari Johnson, Brett Viren, Joel Baker, Robin Gareus") << endl
 		     << endl
 		     << string_compose (_("%1 comes with ABSOLUTELY NO WARRANTY"), PROGRAM_NAME) << endl

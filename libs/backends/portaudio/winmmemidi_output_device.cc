@@ -22,10 +22,10 @@
 
 #include "pbd/debug.h"
 #include "pbd/compose.h"
+#include "pbd/pthread_utils.h"
 #include "pbd/windows_timer_utils.h"
 #include "pbd/windows_mmcss.h"
 
-#include "rt_thread.h"
 #include "midi_util.h"
 
 #include "debug.h"
@@ -45,7 +45,7 @@ WinMMEMidiOutputDevice::WinMMEMidiOutputDevice (int index)
 	, m_enabled(false)
 	, m_thread_running(false)
 	, m_thread_quit(false)
-	, m_midi_buffer(new RingBuffer<uint8_t>(MIDI_BUFFER_SIZE))
+	, m_midi_buffer(new PBD::RingBuffer<uint8_t>(MIDI_BUFFER_SIZE))
 {
 	DEBUG_MIDI (string_compose ("Creating midi output device index: %1\n", index));
 
@@ -230,7 +230,7 @@ WinMMEMidiOutputDevice::start_midi_output_thread ()
 	size_t stacksize = 100000;
 
 	// TODO Use native threads
-	if (_realtime_pthread_create (SCHED_FIFO, -21, stacksize,
+	if (pbd_realtime_pthread_create (PBD_SCHED_FIFO, -21, stacksize,
 				&m_output_thread_handle, midi_output_thread, this)) {
 		return false;
 	}

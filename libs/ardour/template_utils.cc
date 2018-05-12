@@ -101,29 +101,32 @@ find_session_templates (vector<TemplateInfo>& template_names, bool read_xml)
 		rti.path = *i;
 
 		if (read_xml) {
+
 			XMLTree tree;
 			if (!tree.read (file.c_str())) {
+				cerr << "Failed to parse Route-template XML file: " << file;
 				continue;
 			}
 
-			string created_with = "(unknown)";
-			XMLNode *pv = tree.root()->child("ProgramVersion");
-			if (pv != 0) {
-				pv->get_property (X_("created-with"), created_with);
-			}
+			XMLNode* root = tree.root();
 			
-			string description = "No Description";
-			XMLNode *md = tree.root()->child("Metadata");
-			if (md != 0) {
-				XMLNode *desc = md->child("description");
-				if (desc != 0) {
-					description = desc->attribute_value();
+			rti.modified_with = _("(unknown)");
+			try {
+				XMLNode *pv = root->child("ProgramVersion");
+				string modified_with;
+				if (pv != 0) {
+					pv->get_property (X_("modified-with"), modified_with);
 				}
-			}
-			
-			rti.created_with = created_with;
-			rti.description = description;
-			
+				rti.modified_with = modified_with;
+			} catch (XMLException &e) {}
+
+			rti.description = _("No Description");
+			try {
+				XMLNode *desc = root->child("description");
+				if (desc != 0) {
+					rti.description = desc->attribute_value();
+				}
+			} catch (XMLException &e) {}
 		}
 
 		template_names.push_back (rti);
@@ -147,12 +150,31 @@ find_route_templates (vector<TemplateInfo>& template_names)
 		XMLTree tree;
 
 		if (!tree.read (fullpath.c_str())) {
+			cerr << "Failed to parse Route-template XML file: " << fullpath;
 			continue;
 		}
 
 		XMLNode* root = tree.root();
 
 		TemplateInfo rti;
+
+		rti.modified_with = _("(unknown)");
+		try {
+			XMLNode *pv = root->child("ProgramVersion");
+			string modified_with;
+			if (pv != 0) {
+				pv->get_property (X_("modified-with"), modified_with);
+			}
+			rti.modified_with = modified_with;
+		} catch (XMLException &e) {}
+
+		rti.description = _("No Description");
+		try {
+			XMLNode *desc = root->child("description");
+			if (desc != 0) {
+				rti.description = desc->attribute_value();
+			}
+		} catch (XMLException &e) {}
 
 		rti.name = IO::name_from_state (*root->children().front());
 		rti.path = fullpath;

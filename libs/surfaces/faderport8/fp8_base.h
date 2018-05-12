@@ -24,7 +24,13 @@
 
 #include "pbd/signals.h"
 
-namespace ArdourSurface {
+#ifdef FADERPORT16
+#define FP_NAMESPACE FP16
+#else
+#define FP_NAMESPACE FP8
+#endif
+
+namespace ArdourSurface { namespace FP_NAMESPACE {
 
 /* conveniece wrappers depending on "FP8Base& _base" */
 #define fp8_loop dynamic_cast<BaseUI*>(&_base)->main_loop
@@ -96,7 +102,7 @@ public:
 		 std::vector<uint8_t> d;
 		 sysexhdr (d);
 		 d.push_back (0x12);
-		 d.push_back (id & 0x07);
+		 d.push_back (id & 0x0f);
 		 d.push_back (line & 0x03);
 		 d.push_back (align & 0x07);
 
@@ -127,7 +133,11 @@ private:
 		d.push_back (0x00);
 		d.push_back (0x01);
 		d.push_back (0x06);
+#ifdef FADERPORT16
+		d.push_back (0x16);
+#else
 		d.push_back (0x02);
+#endif
 	}
 };
 
@@ -166,5 +176,5 @@ namespace FP8Types {
 
 };
 
-} /* namespace */
+} } /* namespace */
 #endif /* _ardour_surfaces_fp8base_h_ */
