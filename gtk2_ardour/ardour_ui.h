@@ -610,6 +610,8 @@ private:
 	void save_template_dialog_response (int response, SaveTemplateDialog* d);
 	void save_template ();
 	void manage_templates ();
+	void load_lua_from_template (const std::string& template_path) const;
+
 
 	void meta_session_setup (const std::string& script_path);
 	void meta_route_setup (const std::string& script_path);

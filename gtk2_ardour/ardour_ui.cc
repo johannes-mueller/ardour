@@ -3077,7 +3077,15 @@ ARDOUR_UI::save_template_dialog_response (int response, SaveTemplateDialog* d)
 		const string name = d->get_template_name ();
 		const string desc = d->get_description ();
 
-		int failed = _session->save_template (name, desc);
+		LuaInstance* li = LuaInstance::instance();
+		const XMLNode& action_state = li->get_action_state ();
+		const XMLNode& hook_state = li->get_hook_state ();
+
+		XMLNode* lua_scripts = new XMLNode("LuaScripts");
+		lua_scripts->add_child_copy (action_state);
+		lua_scripts->add_child_copy (hook_state);
+
+		int failed = _session->save_template (name, desc, false, lua_scripts);
 
 		if (failed == -2) { /* file already exists. */
 			bool overwrite = overwrite_file_dialog (*d,
@@ -3085,7 +3093,7 @@ ARDOUR_UI::save_template_dialog_response (int response, SaveTemplateDialog* d)
 								_("A template already exists with that name. Do you want to overwrite it?"));
 
 			if (overwrite) {
-				_session->save_template (name, desc, true);
+				_session->save_template (name, desc, true, lua_scripts);
 			}
 			else {
 				d->show ();
@@ -3661,6 +3669,10 @@ ARDOUR_UI::load_session (const std::string& path, const std::string& snap_name, 
 		_session->set_clean ();
 	}
 
+	if (!mix_template.empty()) {
+		load_lua_from_template (mix_template);
+	}
+
 #ifdef WINDOWS_VST_SUPPORT
 	fst_stop_threading();
 #endif
@@ -3693,6 +3705,36 @@ ARDOUR_UI::load_session (const std::string& path, const std::string& snap_name, 
 	}
 	return retval;
 }
+
+void
+ARDOUR_UI::load_lua_from_template (const std::string& template_path) const
+{
+	bool absolute_path = Glib::path_is_absolute (template_path);
+
+	std::string template_filename;
+
+	if (!absolute_path) {
+		template_filename = Glib::build_filename (user_template_directory(), template_path);
+	} else {
+		template_filename = template_path;
+	}
+
+	template_filename = Glib::build_filename (template_filename, Glib::path_get_basename (template_filename) + template_suffix);
+
+	XMLTree tree = XMLTree (template_filename);
+	XMLNode* root = tree.root();
+
+	if (!root) {
+		return;
+	}
+
+	XMLNode* lua_scripts = root->child ("LuaScripts");
+	if (lua_scripts) {
+		LuaInstance::instance()->set_state (*lua_scripts);
+
+	}
+}
+
 
 int
 ARDOUR_UI::build_session (const std::string& path, const std::string& snap_name, BusProfile* bus_profile)

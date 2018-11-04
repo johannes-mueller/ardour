@@ -2470,7 +2470,7 @@ Session::XMLSourceFactory (const XMLNode& node)
 }
 
 int
-Session::save_template (const string& template_name, const string& description, bool replace_existing)
+Session::save_template (const string& template_name, const string& description, bool replace_existing, XMLNode* lua_scripts)
 {
 	if ((_state_of_the_state & CannotSave) || template_name.empty ()) {
 		return -1;
@@ -2539,6 +2539,10 @@ Session::save_template (const string& template_name, const string& description, 
 		desc->add_child_nocopy (*desc_cont);
 
 		root->add_child_nocopy (*desc);
+	}
+
+	if (lua_scripts) {
+		root->add_child_nocopy (*lua_scripts);
 	}
 
 	tree.set_root (root);

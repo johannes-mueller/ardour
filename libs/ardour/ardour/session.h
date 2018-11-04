@@ -534,7 +534,7 @@ public:
 	                     Progress* p = 0);
 
 	int restore_state (std::string snapshot_name);
-	int save_template (const std::string& template_name, const std::string& description = "", bool replace_existing = false);
+	int save_template (const std::string& template_name, const std::string& description = "", bool replace_existing = false, XMLNode* lua_scripts = 0);
 	int save_history (std::string snapshot_name = "");
 	int restore_history (std::string snapshot_name);
 	void remove_state (std::string snapshot_name);
