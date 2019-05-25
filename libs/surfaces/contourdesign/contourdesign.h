@@ -145,6 +145,8 @@ private:
 
 	void shuttle_event (int position);
 
+	double get_requested_shuttle_speed (int position) const;
+
 	bool wait_for_event ();
 	GSource* _io_source;
 	libusb_device_handle* _dev_handle;

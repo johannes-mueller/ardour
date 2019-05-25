@@ -603,12 +603,17 @@ void ContourDesignControlProtocol::jump_backward (JumpDistance dist)
 void
 ContourDesignControlProtocol::set_shuttle_speed (unsigned int index, double speed)
 {
-	/* called from GUI thread */
-	// XXX this may race with ContourDesignControlProtocol::shuttle_event()
 	if (index >= _shuttle_speeds.size()) {
 		return;
 	}
 	_shuttle_speeds[index] = speed;
+}
+
+double
+ContourDesignControlProtocol::get_requested_shuttle_speed (int position) const
+{
+	double speed = position > 0 ? _shuttle_speeds[position-1] : -_shuttle_speeds[-position-1];
+	return speed;
 }
 
 void
@@ -619,7 +624,7 @@ ContourDesignControlProtocol::shuttle_event(int position)
 		if (_shuttle_was_zero) {
 			_was_rolling_before_shuttle = session->transport_rolling ();
 		}
-		double speed = position > 0 ? _shuttle_speeds[position-1] : -_shuttle_speeds[-position-1];
+		double speed = get_requested_shuttle_speed (position);
 		set_transport_speed (speed);
 		_shuttle_was_zero = false;
 	} else {
