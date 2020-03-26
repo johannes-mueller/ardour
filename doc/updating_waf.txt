@@ -16,5 +16,5 @@ cd waf-2.0.19
 
 patch -p1 < $ARDOURSRC/tools/patches/waf-str.patch
 
-./waf-light -v --make-waf --tools=misc,doxygen,$ARDOURSRC/tools/autowaf.py,$ARDOURSRC/tools/misc.py --prelude=''
+./waf-light -v --make-waf --tools=clang_compilation_database,misc,doxygen,$ARDOURSRC/tools/autowaf.py,$ARDOURSRC/tools/misc.py --prelude=$'\tfrom waflib.extras import clang_compilation_database\n'
 cp ./waf $ARDOURSRC/waf

@@ -864,6 +864,8 @@ def options(opt):
         dest='qm_dsp_include', default='/usr/include/qm-dsp',
         help='directory where the header files of qm-dsp can be found')
     opt.add_option ('--use-lld', action='store_true', default=False, dest='use_lld', help='Use LLD linker instead of ld (Linux only)')
+    opt.add_option ('--clang-compilation-database', action='store_true', default=False, dest='clang_comp_db',
+                    help='Make Clang Compilation database file')
 
     for i in children:
         opt.recurse(i)
@@ -1441,6 +1443,9 @@ const char* const ardour_config_info = "\\n\\
 
     if Options.options.dist_target == 'mingw' or Options.options.dist_target == 'msvc':
         create_resource_file(Options.options.program_name)
+
+    if Options.options.clang_comp_db:
+        conf.load('clang_compilation_database')
 
 def build(bld):
     create_stored_revision()
