@@ -51,6 +51,8 @@
 #include "ardour/filesystem_paths.h"
 #include "ardour/template_utils.h"
 
+#include "widgets/overwrite_rename_dialog.h"
+
 #include "progress_reporter.h"
 
 #include "template_dialog.h"
@@ -81,7 +83,9 @@ protected:
 
 	void row_selection_changed ();
 
-	virtual void delete_selected_template () = 0;
+	void delete_selected_template ();
+	virtual void delete_template(const string& path, const string& name) = 0;
+
 	bool adjust_plugin_paths (XMLNode* node, const std::string& name, const std::string& new_name) const;
 
 	struct SessionTemplateColumns : public Gtk::TreeModel::ColumnRecord {
@@ -157,7 +161,7 @@ public:
 
 private:
 	void rename_template (Gtk::TreeModel::iterator& item, const Glib::ustring& new_name);
-	void delete_selected_template ();
+	void delete_template (const string& path, const string& name);
 
 	std::string templates_dir () const;
 	virtual std::string templates_dir_basename () const;
@@ -179,7 +183,7 @@ public:
 
 private:
 	void rename_template (Gtk::TreeModel::iterator& item, const Glib::ustring& new_name);
-	void delete_selected_template ();
+	void delete_template (const string& path, const string& name);
 
 	std::string templates_dir () const;
 	virtual std::string templates_dir_basename () const;
@@ -392,7 +396,6 @@ TemplateManager::validate_edit (const Glib::ustring& path_string, const Glib::us
 		return;
 	}
 
-
 	rename_template (current, new_name);
 }
 
@@ -595,12 +598,58 @@ TemplateManager::import_template_set ()
 	PBD::ScopedConnectionList progress_connection;
 	ar.progress.connect_same_thread (progress_connection, boost::bind (&_set_progress, this, _1, _2));
 
+	int overwrite_skip = 0;
+	std::map<string, bool> write_it;
+	std::map<string, string> rename_map;
+
 	for (std::string fn = ar.next_file_name(); !fn.empty(); fn = ar.next_file_name()) {
-		const size_t pos = fn.find (templates_dir_basename ());
-		if (pos == string::npos) {
+		const size_t junk_pos = fn.find (templates_dir_basename ());
+		if (junk_pos == string::npos) {
 			continue;
 		}
-		const std::string dest = Glib::build_filename (user_config_directory(), fn.substr (pos));
+		const string filename = fn.substr (junk_pos);
+
+		const size_t start_pos = templates_dir_basename().length() + 1;
+		size_t end_pos = filename.find(G_DIR_SEPARATOR, start_pos + 1);
+		if (end_pos == string::npos) {
+			end_pos = filename.find(".template", filename.length() - 9);
+		}
+		const string template_name = filename.substr (start_pos, end_pos - start_pos);
+		std::string dest = Glib::build_filename (user_config_directory(), filename);
+
+		if (!write_it.count (template_name)) {
+			if (g_file_test (dest.c_str(), G_FILE_TEST_EXISTS)) {
+				if (!(overwrite_skip & ArdourWidgets::OverwriteRenameDialog::TO_ALL)) {
+					Window* win = dynamic_cast<Window*> (get_toplevel ());
+					if (!win) {
+						break;
+					}
+					ArdourWidgets::OverwriteRenameDialog dlg (*win, _("Template already exists"), template_name);
+					const int response = dlg.run();
+					if (response == ArdourWidgets::OverwriteRenameDialog::RENAME) {
+						rename_map[template_name] = dlg.new_name();
+						write_it[template_name] = true;
+					}
+					overwrite_skip = response;
+				}
+				const bool overwrite = overwrite_skip & ArdourWidgets::OverwriteRenameDialog::OVERWRITE;
+				if (overwrite) {
+					delete_template(Glib::build_filename (templates_dir_basename (), template_name), filename);
+				}
+				write_it[template_name] = overwrite;
+			} else {
+				write_it[template_name] = true;
+			}
+		}
+
+		if (!write_it[template_name]) {
+			continue;
+		}
+
+		const std::map<string, string>::const_iterator it = rename_map.find(template_name);
+		if (it != rename_map.end()) {
+			dest = it->second;
+		}
 		ar.extract_current_file (dest);
 	}
 	vector<string> files;
@@ -624,6 +673,21 @@ TemplateManager::import_template_set ()
 	init ();
 	TemplatesImported (); /* emit signal */
 }
+
+void
+TemplateManager::delete_selected_template ()
+{
+	if (!_current_selection) {
+		return;
+	}
+
+	delete_template (_current_selection->get_value (_template_columns.path), _current_selection->get_value (_template_columns.name));
+
+	_template_model->erase (_current_selection);
+	_current_selection = TreeIter ();
+	row_selection_changed ();
+}
+
 
 bool
 TemplateManager::adjust_plugin_paths (XMLNode* node, const string& name, const string& new_name) const
@@ -773,17 +837,9 @@ SessionTemplateManager::rename_template (TreeModel::iterator& item, const Glib::
 }
 
 void
-SessionTemplateManager::delete_selected_template ()
+SessionTemplateManager::delete_template (const string& path, const string& /* name */)
 {
-	if (!_current_selection) {
-		return;
-	}
-
-	PBD::remove_directory (_current_selection->get_value (_template_columns.path));
-
-	_template_model->erase (_current_selection);
-	_current_selection = TreeIter ();
-	row_selection_changed ();
+	PBD::remove_directory (path);
 }
 
 string
@@ -880,23 +936,13 @@ RouteTemplateManager::rename_template (TreeModel::iterator& item, const Glib::us
 }
 
 void
-RouteTemplateManager::delete_selected_template ()
+RouteTemplateManager::delete_template (const string& path, const string& name)
 {
-	if (!_current_selection) {
+	if (g_unlink (path.c_str()) != 0) {
+		error << string_compose(_("Could not delete template file \"%1\": %2"), path, strerror (errno)) << endmsg;
 		return;
 	}
-
-	const string file_path = _current_selection->get_value (_template_columns.path);
-
-	if (g_unlink (file_path.c_str()) != 0) {
-		error << string_compose(_("Could not delete template file \"%1\": %2"), file_path, strerror (errno)) << endmsg;
-		return;
-	}
-	PBD::remove_directory (Glib::build_filename (user_route_template_directory (),
-						     _current_selection->get_value (_template_columns.name)));
-
-	_template_model->erase (_current_selection);
-	row_selection_changed ();
+	PBD::remove_directory (Glib::build_filename (user_route_template_directory (), name));
 }
 
 string
