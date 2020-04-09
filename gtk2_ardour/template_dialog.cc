@@ -630,7 +630,9 @@ TemplateManager::import_template_set ()
 						rename_map[template_name] = dlg.new_name();
 						write_it[template_name] = true;
 					}
-					overwrite_skip = response;
+					overwrite_skip = (response == Gtk::RESPONSE_DELETE_EVENT)
+						? ArdourWidgets::OverwriteRenameDialog::SKIP | ArdourWidgets::OverwriteRenameDialog::TO_ALL
+						: response;
 				}
 				const bool overwrite = overwrite_skip & ArdourWidgets::OverwriteRenameDialog::OVERWRITE;
 				if (overwrite) {
