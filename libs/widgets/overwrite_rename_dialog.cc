@@ -47,12 +47,15 @@ OverwriteRenameDialog::OverwriteRenameDialog (Gtk::Window& parent, std::string t
 	get_vbox()->pack_start (*rn_bx);
 
 	add_button (_("Overwrite"), OVERWRITE);
+	add_button (_("Overwrite all"), OVERWRITE | TO_ALL);
 	add_button (_("Skip"), SKIP);
+	add_button (_("Skip all"), SKIP | TO_ALL);
 	_rename_button = add_button (_("Rename"), RENAME);
 
 	_rename_button->set_sensitive (false);
 
 	_rename_editor.get_buffer()->signal_changed().connect (sigc::mem_fun (*this, &OverwriteRenameDialog::name_changed));
+	_rename_editor.set_accepts_tab (false);
 
 	show_all_children();
 }
