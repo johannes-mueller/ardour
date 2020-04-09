@@ -33,15 +33,19 @@ OverwriteRenameDialog::OverwriteRenameDialog (Gtk::Window& parent, std::string t
 	, _rename_button (0)
 	, _rename_editor ()
 {
+	set_border_width (12);
+
 	_rename_editor.get_buffer()->set_text (old_name);
 
-	Label* label = manage (new Label (string_compose (_("A template of the name %1 already exists."), old_name)));
+	Label* label = manage (new Label (string_compose (_("A template of the name ""%1"" already exists."), old_name)));
 
-	get_vbox()->pack_start (*label, true, true);
+	get_vbox()->pack_start (*label, false, false, 12);
+	get_vbox()->set_spacing (6);
 
 	HBox* rn_bx = manage (new HBox);
+	rn_bx->set_spacing (4);
 	label = manage (new Label (_("Rename to:")));
-	rn_bx->pack_start (*label);
+	rn_bx->pack_start (*label, false, false);
 	rn_bx->pack_start (_rename_editor);
 
 	get_vbox()->pack_start (*rn_bx);
