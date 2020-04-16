@@ -2138,6 +2138,7 @@ LuaBindings::common (lua_State* L)
 		.addConst ("Slide", ARDOUR::EditMode(Slide))
 		.addConst ("Splice", ARDOUR::EditMode(Splice))
 		.addConst ("Ripple", ARDOUR::EditMode(Ripple))
+		.addConst ("RippleGlobal", ARDOUR::EditMode(RippleGlobal))
 		.addConst ("Lock", ARDOUR::EditMode(Lock))
 		.endNamespace ()
 

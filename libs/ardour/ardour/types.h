@@ -418,6 +418,7 @@ enum EditMode {
 	Slide,
 	Splice,
 	Ripple,
+	RippleGlobal,
 	Lock
 };
 

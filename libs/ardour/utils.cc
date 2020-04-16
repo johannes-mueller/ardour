@@ -422,6 +422,8 @@ ARDOUR::string_to_edit_mode (string str)
 		return Slide;
 	} else if (str == _("Ripple")) {
 		return Ripple;
+	} else if (str == _("Ripple global")) {
+		return RippleGlobal;
 	} else if (str == _("Lock")) {
 		return Lock;
 	}
@@ -442,6 +444,9 @@ ARDOUR::edit_mode_to_string (EditMode mode)
 
 	case Ripple:
 		return _("Ripple");
+
+	case RippleGlobal:
+		return _("Ripple global");
 
 	default:
 	case Splice:
@@ -703,4 +708,3 @@ ARDOUR::compute_sha1_of_file (std::string path)
 extern "C" {
 	void c_stacktrace() { stacktrace (cerr); }
 }
-
