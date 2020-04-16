@@ -504,20 +504,40 @@ public:
 	RegionRippleDrag (Editor *, ArdourCanvas::Item *, RegionView *, std::list<RegionView*> const &);
 	~RegionRippleDrag () { delete exclude; }
 
+	void start_grab (GdkEvent *, Gdk::Cursor *);
 	void motion (GdkEvent *, bool);
 	void finished (GdkEvent *, bool);
 	void aborted (bool);
 protected:
 	bool y_movement_allowed (int delta_track, double delta_layer, int skip_invisible = 0) const;
 
+	void add_all_after_to_views (TimeAxisView *tav, ARDOUR::samplepos_t where, const RegionSelection &exclude);
+	void remove_unselected_from_views (ARDOUR::samplecnt_t amount, bool move_regions);
+
+	RegionSelection selected_regions;
+
+	std::set<boost::shared_ptr<ARDOUR::Playlist> > _treated_playlists;
+
 private:
 	ARDOUR::samplecnt_t prev_amount;
 	ARDOUR::samplepos_t prev_position;
 	ARDOUR::samplecnt_t selection_length;
 	ARDOUR::RegionList *exclude;
-	virtual void add_all_after_to_views (TimeAxisView *tav, ARDOUR::samplepos_t where, const RegionSelection &exclude);
-	void remove_unselected_from_views (ARDOUR::samplecnt_t amount, bool move_regions);
 };
+
+
+class RegionRippleGlobalDrag : public RegionRippleDrag
+{
+public:
+	RegionRippleGlobalDrag (Editor *, ArdourCanvas::Item *, RegionView *, std::list<RegionView*> const &);
+	~RegionRippleGlobalDrag () { }
+
+	void start_grab (GdkEvent *, Gdk::Cursor *);
+
+	std::set<boost::shared_ptr<ARDOUR::Playlist> > treated_playlists () const;
+};
+
+
 
 /** "Drag" to cut a region (action only on button release) */
 class RegionCutDrag : public Drag

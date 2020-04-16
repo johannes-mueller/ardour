@@ -211,6 +211,7 @@ static const gchar *_edit_mode_strings[] = {
 	N_("Slide"),
 	N_("Splice"),
 	N_("Ripple"),
+	N_("Ripple global"),
 	N_("Lock"),
 	0
 };
@@ -3263,6 +3264,7 @@ Editor::build_edit_mode_menu ()
 
 	edit_mode_selector.AddMenuElem (MenuElem (edit_mode_strings[(int)Slide], sigc::bind (sigc::mem_fun(*this, &Editor::edit_mode_selection_done), (EditMode) Slide)));
 	edit_mode_selector.AddMenuElem (MenuElem (edit_mode_strings[(int)Ripple], sigc::bind (sigc::mem_fun(*this, &Editor::edit_mode_selection_done), (EditMode) Ripple)));
+	edit_mode_selector.AddMenuElem (MenuElem (edit_mode_strings[(int)RippleGlobal], sigc::bind (sigc::mem_fun(*this, &Editor::edit_mode_selection_done), (EditMode) RippleGlobal)));
 	edit_mode_selector.AddMenuElem (MenuElem (edit_mode_strings[(int)Lock], sigc::bind (sigc::mem_fun(*this, &Editor::edit_mode_selection_done), (EditMode)  Lock)));
 	/* Note: Splice was removed */
 
@@ -3724,8 +3726,10 @@ Editor::cycle_edit_mode ()
 		break;
 	case Splice:
 	case Ripple:
-		Config->set_edit_mode (Lock);
+		Config->set_edit_mode (RippleGlobal);
 		break;
+	case RippleGlobal:
+		Config->set_edit_mode(Lock);
 	case Lock:
 		Config->set_edit_mode (Slide);
 		break;

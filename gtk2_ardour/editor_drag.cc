@@ -2180,6 +2180,50 @@ RegionSpliceDrag::aborted (bool)
  * ripple mode...
  */
 
+RegionRippleDrag::RegionRippleDrag (Editor* e, ArdourCanvas::Item* i, RegionView* p, list<RegionView*> const & v)
+	: RegionMoveDrag (e, i, p, v, false, false)
+{
+	DEBUG_TRACE (DEBUG::Drags, "New RegionRippleDrag\n");
+	// compute length of selection
+	selected_regions = _editor->selection->regions;
+	selection_length = selected_regions.end_sample() - selected_regions.start();
+
+	prev_amount = 0;
+	exclude = new RegionList;
+	for (RegionSelection::iterator i =selected_regions.begin(); i != selected_regions.end(); ++i) {
+		exclude->push_back((*i)->region());
+	}
+}
+
+void
+RegionRippleDrag::start_grab (GdkEvent* e, Gdk::Cursor* c)
+{
+	// also add regions before start of selection to exclude, to be consistent with how Mixbus does ripple
+	RegionSelection copy;
+	selected_regions.by_position(copy); // get selected regions sorted by position into copy
+
+	_treated_playlists =  _editor->selection->regions.playlists();
+	std::set<boost::shared_ptr<ARDOUR::Playlist> >::const_iterator pi;
+
+	for (pi = _treated_playlists.begin(); pi != _treated_playlists.end(); ++pi) {
+		// find ripple start point on each applicable playlist
+		RegionView *first_selected_on_this_track = NULL;
+		for (RegionSelection::const_iterator i = copy.begin(); i != copy.end(); ++i) {
+			if ((*i)->region()->playlist() == (*pi)) {
+				// region is on this playlist - it's the first, because they're sorted
+				first_selected_on_this_track = *i;
+				break;
+			}
+		}
+		assert (first_selected_on_this_track); // we should always find the region in one of the playlists...
+		add_all_after_to_views (
+				&first_selected_on_this_track->get_time_axis_view(),
+				first_selected_on_this_track->region()->position(), selected_regions);
+	}
+
+	RegionMotionDrag::start_grab(e, c);
+}
+
 void
 RegionRippleDrag::add_all_after_to_views(TimeAxisView *tav, samplepos_t where, const RegionSelection &exclude)
 {
@@ -2244,44 +2288,6 @@ RegionRippleDrag::y_movement_allowed (int delta_track, double delta_layer, int s
 	return !delta_track && RegionMotionDrag::y_movement_allowed (delta_track, delta_layer, skip_invisible);
 }
 
-RegionRippleDrag::RegionRippleDrag (Editor* e, ArdourCanvas::Item* i, RegionView* p, list<RegionView*> const & v)
-	: RegionMoveDrag (e, i, p, v, false, false)
-{
-	DEBUG_TRACE (DEBUG::Drags, "New RegionRippleDrag\n");
-	// compute length of selection
-	RegionSelection selected_regions = _editor->selection->regions;
-	selection_length = selected_regions.end_sample() - selected_regions.start();
-
-	prev_amount = 0;
-	exclude = new RegionList;
-	for (RegionSelection::iterator i =selected_regions.begin(); i != selected_regions.end(); ++i) {
-		exclude->push_back((*i)->region());
-	}
-
-	// also add regions before start of selection to exclude, to be consistent with how Mixbus does ripple
-	RegionSelection copy;
-	selected_regions.by_position(copy); // get selected regions sorted by position into copy
-
-	std::set<boost::shared_ptr<ARDOUR::Playlist> > playlists = copy.playlists();
-	std::set<boost::shared_ptr<ARDOUR::Playlist> >::const_iterator pi;
-
-	for (pi = playlists.begin(); pi != playlists.end(); ++pi) {
-		// find ripple start point on each applicable playlist
-		RegionView *first_selected_on_this_track = NULL;
-		for (RegionSelection::iterator i = copy.begin(); i != copy.end(); ++i) {
-			if ((*i)->region()->playlist() == (*pi)) {
-				// region is on this playlist - it's the first, because they're sorted
-				first_selected_on_this_track = *i;
-				break;
-			}
-		}
-		assert (first_selected_on_this_track); // we should always find the region in one of the playlists...
-		add_all_after_to_views (
-				&first_selected_on_this_track->get_time_axis_view(),
-				first_selected_on_this_track->region()->position(), selected_regions);
-	}
-}
-
 void
 RegionRippleDrag::motion (GdkEvent* event, bool first_move)
 {
@@ -2316,16 +2322,15 @@ RegionRippleDrag::finished (GdkEvent* event, bool movement_occurred)
 
 	_editor->begin_reversible_command(_("Ripple drag"));
 
-	std::set<boost::shared_ptr<ARDOUR::Playlist> > playlists = _editor->selection->regions.playlists();
 	std::set<boost::shared_ptr<ARDOUR::Playlist> >::const_iterator pi;
 
-	for (pi = playlists.begin(); pi != playlists.end(); ++pi) {
+	for (pi = _treated_playlists.begin(); pi != _treated_playlists.end(); ++pi) {
 		(*pi)->clear_changes();
 		(*pi)->clear_owned_changes();
 	}
 	remove_unselected_from_views (prev_amount, true);
 
-	for (pi = playlists.begin(); pi != playlists.end(); ++pi) {
+	for (pi = _treated_playlists.begin(); pi != _treated_playlists.end(); ++pi) {
 		vector<Command*> cmds;
 		(*pi)->rdiff (cmds);
 		_editor->session()->add_commands (cmds);
@@ -2343,6 +2348,35 @@ RegionRippleDrag::aborted (bool movement_occurred)
 	_views.clear ();
 }
 
+RegionRippleGlobalDrag::RegionRippleGlobalDrag (Editor* e, ArdourCanvas::Item* i, RegionView* p, list<RegionView*> const & v)
+	: RegionRippleDrag (e, i, p, v)
+{
+}
+
+void
+RegionRippleGlobalDrag::start_grab (GdkEvent* e, Gdk::Cursor* c)
+{
+	RegionSelection sorted;
+	selected_regions.by_position (sorted);
+
+	samplecnt_t start_pos = selected_regions.start();
+
+	TrackViewList tavs = _editor->get_track_views();
+	for (TrackViewList::const_iterator it = tavs.begin(); it != tavs.end(); ++it) {
+		RouteTimeAxisView* rtv = dynamic_cast<RouteTimeAxisView*>(*it);
+		if (!rtv) {
+			continue;
+		}
+		boost::shared_ptr<Playlist> pl = rtv->playlist();
+		if (!pl) {
+			continue;
+		}
+		_treated_playlists.insert (pl);
+		add_all_after_to_views (rtv, start_pos, selected_regions);
+	}
+
+	RegionMotionDrag::start_grab(e, c);
+}
 
 RegionCreateDrag::RegionCreateDrag (Editor* e, ArdourCanvas::Item* i, TimeAxisView* v)
 	: Drag (e, i),
