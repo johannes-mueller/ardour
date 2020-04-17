@@ -2379,27 +2379,31 @@ RegionRippleGlobalDrag::start_grab (GdkEvent* e, Gdk::Cursor* c)
 void
 RegionRippleGlobalDrag::motion (GdkEvent* event, bool first_move)
 {
-	MusicSample after (0, 0);
-	double delta = compute_x_delta (event, &after);
-	samplecnt_t new_pos = _first_sample + _editor->pixel_to_sample (delta);
+	double delta = current_pointer_x() - last_pointer_x();
+	samplecnt_t amount = _editor->pixel_to_sample (delta);
+	samplecnt_t new_pos = _first_sample + amount;
 
-	std::set<boost::shared_ptr<ARDOUR::Playlist> >::const_iterator pi = _treated_playlists.begin();
+	std::set<boost::shared_ptr<ARDOUR::Playlist> >::const_iterator pi;
 
-	while (pi != _treated_playlists.end()) {
+	for (pi = _treated_playlists.begin(); pi != _treated_playlists.end(); ++pi) {
 		boost::shared_ptr<Region> maybe_blocking = (*pi)->find_next_region (new_pos, End, 1);
 		if (maybe_blocking && maybe_blocking->last_sample() < _first_sample_at_start) {
 			break;
 		}
-		++pi;
 	}
 
-	if (pi != _treated_playlists.end()) {
-		return;
-	}
+	_x_constrained = pi != _treated_playlists.end();
 
+	MusicSample after (0, 0);
+	delta = compute_x_delta (event, &after);
+	prev_amount += _editor->pixel_to_sample (delta);;
+
+
+	RegionMoveDrag::motion(event, first_move);
+
+	_x_constrained = false;
+	_last_position = after;
 	_first_sample = new_pos;
-
-	RegionRippleDrag::motion (event, first_move);
 }
 
 RegionCreateDrag::RegionCreateDrag (Editor* e, ArdourCanvas::Item* i, TimeAxisView* v)

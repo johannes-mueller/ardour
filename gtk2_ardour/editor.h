@@ -2346,6 +2346,7 @@ private:
 	friend class RegionMoveDrag;
 	friend class RegionSpliceDrag;
 	friend class RegionRippleDrag;
+	friend class RegionRippleGlobalDrag;
 	friend class TrimDrag;
 	friend class BBTRulerDrag;
 	friend class MeterMarkerDrag;

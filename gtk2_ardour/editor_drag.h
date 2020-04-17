@@ -518,8 +518,9 @@ protected:
 
 	std::set<boost::shared_ptr<ARDOUR::Playlist> > _treated_playlists;
 
-private:
 	ARDOUR::samplecnt_t prev_amount;
+
+private:
 	ARDOUR::samplepos_t prev_position;
 	ARDOUR::samplecnt_t selection_length;
 	ARDOUR::RegionList *exclude;
