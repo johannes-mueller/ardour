@@ -533,8 +533,13 @@ public:
 	~RegionRippleGlobalDrag () { }
 
 	void start_grab (GdkEvent *, Gdk::Cursor *);
+	void motion (GdkEvent *, bool);
 
 	std::set<boost::shared_ptr<ARDOUR::Playlist> > treated_playlists () const;
+
+private:
+	ARDOUR::samplecnt_t _first_sample;
+	ARDOUR::samplecnt_t _first_sample_at_start;
 };
 
 

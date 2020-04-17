@@ -2356,10 +2356,8 @@ RegionRippleGlobalDrag::RegionRippleGlobalDrag (Editor* e, ArdourCanvas::Item* i
 void
 RegionRippleGlobalDrag::start_grab (GdkEvent* e, Gdk::Cursor* c)
 {
-	RegionSelection sorted;
-	selected_regions.by_position (sorted);
-
-	samplecnt_t start_pos = selected_regions.start();
+	_first_sample_at_start = selected_regions.start();
+	_first_sample = _first_sample_at_start;
 
 	TrackViewList tavs = _editor->get_track_views();
 	for (TrackViewList::const_iterator it = tavs.begin(); it != tavs.end(); ++it) {
@@ -2372,10 +2370,36 @@ RegionRippleGlobalDrag::start_grab (GdkEvent* e, Gdk::Cursor* c)
 			continue;
 		}
 		_treated_playlists.insert (pl);
-		add_all_after_to_views (rtv, start_pos, selected_regions);
+		add_all_after_to_views (rtv, _first_sample, selected_regions);
 	}
 
 	RegionMotionDrag::start_grab(e, c);
+}
+
+void
+RegionRippleGlobalDrag::motion (GdkEvent* event, bool first_move)
+{
+	MusicSample after (0, 0);
+	double delta = compute_x_delta (event, &after);
+	samplecnt_t new_pos = _first_sample + _editor->pixel_to_sample (delta);
+
+	std::set<boost::shared_ptr<ARDOUR::Playlist> >::const_iterator pi = _treated_playlists.begin();
+
+	while (pi != _treated_playlists.end()) {
+		boost::shared_ptr<Region> maybe_blocking = (*pi)->find_next_region (new_pos, End, 1);
+		if (maybe_blocking && maybe_blocking->last_sample() < _first_sample_at_start) {
+			break;
+		}
+		++pi;
+	}
+
+	if (pi != _treated_playlists.end()) {
+		return;
+	}
+
+	_first_sample = new_pos;
+
+	RegionRippleDrag::motion (event, first_move);
 }
 
 RegionCreateDrag::RegionCreateDrag (Editor* e, ArdourCanvas::Item* i, TimeAxisView* v)
